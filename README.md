@@ -81,9 +81,43 @@ Allow inbound **TCP 7000**. If your clients have static IPs, allow only those.
 cd server
 docker compose up -d --build
 docker compose logs -f   # expect: "frps started successfully"
+cd ..
 ```
 
-### 5. Issue a cert for each client
+### 5. Connect to the right Docker network
+
+Decide now whether frps will sit behind Nginx Proxy Manager (NPM), and confirm it's on the right network. A wrong network is the usual cause of `502 Bad Gateway` later. The helper script does both, from the repo root:
+
+```bash
+scripts/npm-network.sh
+```
+
+```
+  1) Connect frps to NPM's network
+  2) Disconnect (default: frps on its own network only, no NPM)
+  3) Check the current setup (changes nothing)
+```
+
+| Your setup | Choose |
+|---|---|
+| **No NPM**, or only stcp/tcp proxies (the default) | **3) Check**: confirms frps is in default mode. Nothing to configure. |
+| **NPM on this server**. Start it first if needed; see [Part 4](#part-4-websites-via-nginx-proxy-manager), step 1 | **1) Connect**: finds NPM's network, updates `server/.env` and `server/frps.toml`, recreates frps, then runs the check automatically |
+
+The check looks like this when it passes:
+
+```
+Checking frps network setup:
+  [ OK ] frps is running, on: npm_default server_default
+  [ OK ] vhostHTTPPort is enabled in server/frps.toml
+  [ OK ] frps is on PROXY_NETWORK=npm_default
+  [ OK ] NPM container 'npm' is on npm_default too, so NPM can reach http://frps:8080
+```
+
+Each `[FAIL]` line says what's wrong and how to fix it. For example, frps might not have been recreated yet, or NPM might be on a different network than `PROXY_NETWORK`. In default mode, a `[WARN]` means NPM is running but frps isn't connected to it; that's fine if you don't proxy websites through NPM.
+
+Run **3) Check** again any time you change NPM or `server/.env`. Run as your normal user; if Docker needs root, the script offers to use `sudo` for docker commands only.
+
+### 6. Issue a cert for each client
 
 Run this from the repo root on the server, with one unique name per machine:
 
@@ -94,7 +128,7 @@ scripts/gen-certs.sh client laptop
 
 Each command creates `pki/clients/<name>.tar.gz` containing `ca.crt`, `client.crt` and `client.key`. You'll copy it to that machine in Part 2. It contains a private key, so only transfer it over a secure channel like `scp`.
 
-### 6. Protect the CA key
+### 7. Protect the CA key
 
 Once you've issued the certs you need, move `pki/ca.key` off the server, for example to an encrypted USB drive or a password manager. You only need it to issue new certs. Certs expire after 1 year.
 
@@ -177,7 +211,7 @@ The client uses `network_mode: host`, so `localIP = "127.0.0.1"` reaches service
 
 ## Part 3: Visitor (connecting to an stcp service)
 
-The visitor is the machine you connect *from*, for example your laptop. Set it up exactly like Part 2, with its own cert from server step 5. In `.env`, use the **same** `FRP_STCP_SECRET` as the client whose service you want to reach.
+The visitor is the machine you connect *from*, for example your laptop. Set it up exactly like Part 2, with its own cert from Part 1, step 6. In `.env`, use the **same** `FRP_STCP_SECRET` as the client whose service you want to reach.
 
 In `frpc.toml`, uncomment the visitor block:
 
@@ -254,7 +288,8 @@ It's interactive and confirms each change before applying it:
 ```
   1) Connect frps to NPM's network
   2) Disconnect (default: frps on its own network only, no NPM)
-What do you want to do? [1-2] 1
+  3) Check the current setup (changes nothing)
+What do you want to do? [1-3] 1
 Found NPM container 'npm'. Use it? [Y/n] y
 'npm' is on network 'npm_default'. Connect frps to it? [Y/n] y
 
@@ -264,10 +299,18 @@ Planned changes:
   server/frps.toml:  enable vhostHTTPPort = 8080
 
 Apply these changes? [Y/n] y
-Recreate frps now (docker compose up -d)? [Y/n] y
-==> frps networks: npm_default server_default
-Done. In NPM, forward proxy hosts to:  http://frps:8080
+Start/recreate frps now and check the result? [Y/n] y
+
+Checking frps network setup:
+  [ OK ] frps is running, on: npm_default server_default
+  [ OK ] vhostHTTPPort is enabled in server/frps.toml
+  [ OK ] frps is on PROXY_NETWORK=npm_default
+  [ OK ] NPM container 'npm' is on npm_default too, so NPM can reach http://frps:8080
+
+==> Done. In NPM, forward proxy hosts to:  http://frps:8080
 ```
+
+To verify later without changing anything, choose **3) Check**.
 
 How it handles each NPM setup:
 
@@ -280,20 +323,20 @@ How it handles each NPM setup:
 | `network_mode: host` | Changes nothing, and prints the alternative: publish `127.0.0.1:8080:8080` and forward to `127.0.0.1:8080` |
 | Container not detected (custom image name) | Lists running containers and asks for the name |
 
-To undo it later, run the script again and choose **2) Disconnect**. That comments the two lines back out and recreates frps on its own network only.
+To undo it later, run the script again and choose **2) Disconnect**. That comments the two lines back out, recreates frps on its own network only, and runs the check.
 
 #### Changing the network later
 
 Sometimes NPM moves to a different network: you add a shared `proxy` network to its compose file, rename its folder (which renames `<folder>_default`), or replace it. frps has to follow.
 
-**With the script:** run `scripts/npm-network.sh` again and choose **1) Connect**. It detects NPM's current network and overwrites `PROXY_NETWORK`.
+**With the script:** run `scripts/npm-network.sh` again and choose **1) Connect**. It detects NPM's current network, overwrites `PROXY_NETWORK`, recreates frps and checks the result. If you're not sure whether anything changed, choose **3) Check** first.
 
 **By hand:** set the new name in `server/.env` and re-run compose:
 
 ```bash
 sed -i -E 's|^#?[[:space:]]*PROXY_NETWORK=.*|PROXY_NETWORK=proxy|' server/.env   # new network name
 (cd server && docker compose up -d)
-docker inspect frps -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+scripts/npm-network.sh   # choose 3) Check
 ```
 
 Compose notices the change, then recreates frps and moves it from the old network to the new one; you don't need `down`. NPM's proxy hosts don't need editing, because they still forward to `frps:8080`.
@@ -438,6 +481,6 @@ Short cert lifetimes keep the exposure window small.
 | `open /etc/frp/tls/...: permission denied` | The `tls/` folder isn't `755` (`chmod 755 tls`), or the key isn't owned by uid 65532 (`sudo chown 65532:65532 tls/*.key`) |
 | `bind source path does not exist: .../frpc.toml` (or `frps.toml`, `tls`) | You haven't copied the `.example` file, or haven't installed the certs, yet |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
-| NPM shows `502 Bad Gateway` | frps isn't on NPM's network (check `COMPOSE_FILE` / `PROXY_NETWORK` in `server/.env`), or `vhostHTTPPort` isn't enabled |
+| NPM shows `502 Bad Gateway` | frps isn't on NPM's network, or `vhostHTTPPort` isn't enabled. Run `scripts/npm-network.sh` → **3) Check** to see which |
 | frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
 | Let's Encrypt fails in NPM | DNS doesn't point at the server yet, or port 80 is blocked |

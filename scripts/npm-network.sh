@@ -2,7 +2,8 @@
 # Interactively connect frps to the Docker network Nginx Proxy Manager uses
 # (or disconnect it). Detects NPM's container and networks, then updates
 # server/.env (COMPOSE_FILE, PROXY_NETWORK) and server/frps.toml
-# (vhostHTTPPort). Every change is confirmed first.
+# (vhostHTTPPort). Every change is confirmed first. Option 3 only checks
+# that frps and NPM share the configured network.
 #
 #   scripts/npm-network.sh
 set -euo pipefail
@@ -67,12 +68,87 @@ if [[ ! -f $TOML ]]; then
   cp server/frps.toml.example "$TOML"
 fi
 
+find_npm() { # names of running containers from an nginx-proxy-manager image
+  docker ps --format '{{.Names}}\t{{.Image}}' | awk -F'\t' '$2 ~ /nginx-proxy-manager/ {print $1}'
+}
+
+env_value() { grep -E "^$1=" "$ENV" | tail -1 | cut -d= -f2- || true; }
+
+# ---------- check ----------
+# Verifies frps is on the network .env says, and that NPM is on it too.
+check() {
+  local fail=0 net npm nets npm_nets
+  ok()   { echo "  [ OK ] $*"; }
+  bad()  { echo "  [FAIL] $*"; fail=1; }
+  warn() { echo "  [WARN] $*"; }
+
+  echo
+  echo "Checking frps network setup:"
+  if [[ $(docker inspect -f '{{.State.Running}}' frps 2>/dev/null) != true ]]; then
+    bad "frps isn't running. Start it: (cd server && docker compose up -d)"
+    return 1
+  fi
+  nets=$(container_networks frps | tr '\n' ' ')
+  ok "frps is running, on: $nets"
+
+  mapfile -t found < <(find_npm)
+
+  if ! env_value COMPOSE_FILE | grep -q 'compose\.npm\.yaml'; then
+    ok "Default mode: frps isn't joined to any NPM network (COMPOSE_FILE not set in $ENV)"
+    if (( ${#found[@]} )); then
+      warn "NPM is running (${found[*]}) but frps isn't connected to it."
+      warn "If NPM should proxy websites to frps, run this script again and choose 1) Connect."
+    fi
+    return 0
+  fi
+
+  net=$(env_value PROXY_NETWORK)
+  [[ -n $net ]] || { bad "COMPOSE_FILE is set but PROXY_NETWORK is empty in $ENV"; return 1; }
+
+  if grep -qE '^[[:space:]]*vhostHTTPPort[[:space:]]*=' "$TOML"; then
+    ok "vhostHTTPPort is enabled in $TOML"
+  else
+    bad "vhostHTTPPort isn't enabled in $TOML, so NPM has nothing to forward to"
+  fi
+
+  if ! docker network inspect "$net" >/dev/null 2>&1; then
+    bad "PROXY_NETWORK=$net doesn't exist (docker network ls)"
+    return 1
+  fi
+
+  if [[ " $nets " == *" $net "* ]]; then
+    ok "frps is on PROXY_NETWORK=$net"
+  else
+    bad "frps isn't on $net yet. Recreate it: (cd server && docker compose up -d)"
+  fi
+
+  if (( ${#found[@]} == 0 )); then
+    bad "No running NPM container found (nginx-proxy-manager image)"
+    return 1
+  fi
+  for npm in "${found[@]}"; do
+    npm_nets=$(container_networks "$npm" | paste -sd' ')
+    if [[ " $npm_nets " == *" $net "* ]]; then
+      ok "NPM container '$npm' is on $net too, so NPM can reach http://frps:$(grep -E '^[[:space:]]*vhostHTTPPort' "$TOML" | grep -oE '[0-9]+' | head -1)"
+    else
+      bad "NPM container '$npm' is on: ${npm_nets:-nothing}, not $net. Choose 1) Connect to switch frps to NPM's network."
+    fi
+  done
+  return $fail
+}
+
 echo
 echo "frps <-> Nginx Proxy Manager network setup"
 echo
 pick "What do you want to do?" \
   "Connect frps to NPM's network" \
-  "Disconnect (default: frps on its own network only, no NPM)"
+  "Disconnect (default: frps on its own network only, no NPM)" \
+  "Check the current setup (changes nothing)"
+
+if [[ $PICKED == Check* ]]; then
+  if check; then echo; info "All good."; else echo; die "problems found (see above)"; fi
+  exit 0
+fi
 
 # ---------- disconnect ----------
 if [[ $PICKED == Disconnect* ]]; then
@@ -86,12 +162,13 @@ if [[ $PICKED == Disconnect* ]]; then
   info "Updated $ENV."
   if ask_yn "Recreate frps now so it leaves the network?" y; then
     (cd server && docker compose up -d)
+    check || true
   fi
   exit 0
 fi
 
 # ---------- find the NPM container ----------
-mapfile -t found < <(docker ps --format '{{.Names}}\t{{.Image}}' | awk -F'\t' '$2 ~ /nginx-proxy-manager/ {print $1}')
+mapfile -t found < <(find_npm)
 manual="Enter a container name myself"
 
 if (( ${#found[@]} == 0 )); then
@@ -197,14 +274,14 @@ if (( ! vhost_on )); then
 fi
 info "Updated $ENV$( (( vhost_on )) || echo " and $TOML")."
 
-if ask_yn "Recreate frps now (docker compose up -d)?" y; then
-  (cd server && docker compose up -d)
-  echo
-  info "frps networks: $(container_networks frps | tr '\n' ' ')"
-fi
-
 port=$(grep -E '^[[:space:]]*vhostHTTPPort' "$TOML" | grep -oE '[0-9]+' | head -1)
-cat <<EOF
-
-Done. In NPM, forward proxy hosts to:  http://frps:${port:-8080}
-EOF
+if ask_yn "Start/recreate frps now and check the result?" y; then
+  (cd server && docker compose up -d)
+  check || die "problems found (see above)"
+  echo
+  info "Done. In NPM, forward proxy hosts to:  http://frps:${port:-8080}"
+else
+  echo
+  echo "Start frps with (cd server && docker compose up -d), then run this script"
+  echo "again and choose 3) Check. In NPM, forward proxy hosts to http://frps:${port:-8080}"
+fi
