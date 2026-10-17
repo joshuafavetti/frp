@@ -96,25 +96,25 @@ add_proxy() { # <default localIP> <default port> <default name>: append one [[pr
   local name ip port domains d remote block list=""
   local existing; existing=$(proxies | cut -f1)
   while :; do
-    read -rp "  Proxy name [$3]: " name || die "no input"; name=${name:-$3}
-    if ! valid_name "$name"; then echo "  Use letters, digits, '.', '_' or '-'."; continue; fi
-    if grep -qxF "$name" <<< "$existing"; then echo "  '$name' is already in $TOML (names must be unique across all clients)."; continue; fi
+    ask name "Proxy name" "$3"
+    if ! valid_name "$name"; then echo "  ${YELLOW}Use letters, digits, '.', '_' or '-'.${RESET}"; continue; fi
+    if grep -qxF "$name" <<< "$existing"; then echo "  ${YELLOW}'$name' is already in $TOML (names must be unique across all clients).${RESET}"; continue; fi
     break
   done
-  read -rp "  localIP [$1]: " ip || die "no input"; ip=${ip:-$1}
+  ask ip "localIP" "$1"
   while :; do
-    read -rp "  localPort [${2:-none}]: " port || die "no input"; port=${port:-$2}
-    [[ $port =~ ^[0-9]+$ ]] && break; echo "  Enter the port the service listens on."
+    ask port "localPort" "$2"
+    [[ $port =~ ^[0-9]+$ ]] && break; echo "  ${YELLOW}Enter the port the service listens on.${RESET}"
   done
-  pick "  How should '$name' be reachable?" \
-    "http: website on your domain, via NPM on the server" \
-    "stcp: private, only through a visitor with the shared secret" \
-    "tcp: a public port on the server"
+  pick "How should '$name' be reachable?" \
+    "http  (website on your domain, via NPM on the server)" \
+    "stcp  (private, only through a visitor with the shared secret)" \
+    "tcp  (a public port on the server)"
   block="[[proxies]]
 name      = \"$name\""
   case $PICKED in
     http*)
-      read -rp "  Domain(s), comma-separated (e.g. ha.example.com): " domains || die "no input"
+      ask domains "Domain(s), comma-separated (e.g. ha.example.com)"
       IFS=',' read -ra ds <<< "$domains"
       for d in "${ds[@]}"; do
         d=$(echo "$d" | tr -d '[:space:]')
@@ -130,7 +130,7 @@ localPort = $port
 customDomains = [$list]"
       ;;
     stcp*)
-      grep -qE '^FRP_STCP_SECRET=.+' client/.env || echo "  Note: FRP_STCP_SECRET is empty in client/.env; set it (openssl rand -hex 32)."
+      grep -qE '^FRP_STCP_SECRET=.+' client/.env || note "FRP_STCP_SECRET is empty in client/.env; set it: ${BOLD}openssl rand -hex 32${RESET}"
       block+="
 type      = \"stcp\"
 secretKey = \"{{ .Envs.FRP_STCP_SECRET }}\"
@@ -139,8 +139,8 @@ localPort = $port"
       ;;
     tcp*)
       while :; do
-        read -rp "  remotePort on the server (must be within its allowPorts, default 6000-6009): " remote || die "no input"
-        [[ $remote =~ ^[0-9]+$ ]] && break; echo "  Enter a port number."
+        ask remote "remotePort on the server (within its allowPorts, default 6000-6009)"
+        [[ $remote =~ ^[0-9]+$ ]] && break; echo "  ${YELLOW}Enter a port number.${RESET}"
       done
       block+="
 type       = \"tcp\"
@@ -151,15 +151,15 @@ remotePort = $remote"
   esac
   [[ $PICKED == tcp* ]] && block=${block/name      =/name       =}   # align with remotePort
   echo
-  echo "$block" | sed 's/^/    /'
+  code <<< "$block"
   echo
-  if ask_yn "  Append this to $TOML?" y; then
+  if ask_yn "Append this to $TOML?" y; then
     printf '\n%s\n' "$block" >> "$TOML"   # append in place: keeps the bind-mounted file's inode
     info "Added proxy '$name'."
     case $PICKED in
-      http*) echo "  On the server: add an NPM proxy host for ${list//\"/} -> http://frps:8080 (websockets on if the app needs it)." ;;
-      tcp*)  echo "  On the server: publish \"$remote:$remote\" in server/compose.yaml and open it in the firewall." ;;
-      stcp*) echo "  On the visitor: add a [[visitors]] block with serverName = \"$name\" and the same FRP_STCP_SECRET." ;;
+      http*) next "On the server: add an NPM proxy host for ${BOLD}${list//\"/}${RESET} ${ARROW} http://frps:8080 (websockets on if the app needs it)" ;;
+      tcp*)  next "On the server: publish ${BOLD}\"$remote:$remote\"${RESET} in server/compose.yaml and open it in the firewall" ;;
+      stcp*) next "On the visitor: add a [[visitors]] block with ${BOLD}serverName = \"$name\"${RESET} and the same FRP_STCP_SECRET" ;;
     esac
     return 0
   fi
@@ -171,7 +171,7 @@ add_services() { # <rows...> "label<TAB>localIP<TAB>port<TAB>name"; returns 0 if
   local labels=() r
   for r in "$@"; do labels+=("${r%%$'\t'*}"); done
   while :; do
-    echo
+    section "Services"
     if (( added )); then
       pick "Add another service?" "$done_opt" "${labels[@]}" "$other"
     else
@@ -191,30 +191,26 @@ add_services() { # <rows...> "label<TAB>localIP<TAB>port<TAB>name"; returns 0 if
 }
 
 recreate_and_check() {
+  echo
   if ask_yn "Recreate frpc now and check the result?" y; then
     (cd client && docker compose up -d --force-recreate)   # also re-reads frpc.toml
-    echo "(waiting a few seconds for frpc to log in...)"
+    hint "(waiting a few seconds for frpc to log in...)"
     sleep 5
-    check || die "problems found (see above)"
+    checks || exit 1
     echo
     info "Done."
   else
-    echo "Apply later with (cd client && docker compose up -d --force-recreate), then choose 5) Check."
+    next "Apply later: ${BOLD}(cd client && docker compose up -d --force-recreate)${RESET}, then choose ${BOLD}5) Check${RESET}"
   fi
 }
 
 # ---------- check ----------
 check() {
-  local fail=0 mode nets want n ip name status found_on is_addr login names=""
-  ok()   { echo "  [ OK ] $*"; }
-  bad()  { echo "  [FAIL] $*"; fail=1; }
-  warn() { echo "  [WARN] $*"; }
+  local mode nets want n ip name status found_on is_addr login names=""
 
-  echo
-  echo "Checking frpc network setup:"
   if [[ $(docker inspect -f '{{.State.Running}}' frpc 2>/dev/null) != true ]]; then
-    bad "frpc isn't running. Start it: (cd client && docker compose up -d)"
-    return 1
+    bad "frpc isn't running. Start it: ${BOLD}(cd client && docker compose up -d)${RESET}"
+    return
   fi
   mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' frpc)
   nets=$(container_networks frpc | paste -sd' ')
@@ -257,7 +253,7 @@ check() {
     [[ $ip =~ ^[0-9.]+$ || $ip == *:* || $ip == localhost ]] && is_addr=1
     if [[ $mode == host ]]; then
       if (( is_addr )); then
-        ok "Proxy '$name' -> $ip"
+        ok "Proxy '$name' ${ARROW} $ip"
       else
         bad "Proxy '$name' uses localIP=\"$ip\" (a container name), but frpc is on host networking. Use 1) Connect for its app, or localIP=\"127.0.0.1\" with a published port"
       fi
@@ -268,11 +264,11 @@ check() {
     else
       found_on=$(awk -F'\t' -v x="$ip" '$2 == x {print $1}' <<< "$names" | sort -u | paste -sd' ')
       if [[ -z $found_on ]]; then
-        bad "Proxy '$name' -> '$ip' doesn't match any container on frpc's networks. Connect its app with 1) Connect, or fix localIP"
+        bad "Proxy '$name' ${ARROW} '$ip' doesn't match any container on frpc's networks. Connect its app with 1) Connect, or fix localIP"
       elif [[ $found_on == *" "* ]]; then
-        warn "Proxy '$name' -> '$ip' exists on several networks ($found_on), so it may hit the wrong app. Use the unique container name instead"
+        warn "Proxy '$name' ${ARROW} '$ip' exists on several networks ($found_on), so it may hit the wrong app. Use the unique container name instead"
       else
-        ok "Proxy '$name' -> '$ip' resolves on $found_on"
+        ok "Proxy '$name' ${ARROW} '$ip' resolves on $found_on"
       fi
     fi
     status=$(docker logs frpc 2>&1 | grep -F "[$name] start" | tail -1 || true)
@@ -287,27 +283,26 @@ check() {
     warn "frpc.toml has [[visitors]]; off host networking, their bindAddr is inside the container"
     warn "and unreachable from this machine. Keep visitor machines on host networking (option 4)."
   fi
-  return $fail
 }
+
+checks() { run_checks "Checking frpc setup" check; }
 
 # ---------- preflight ----------
 docker_preflight
 [[ -f client/.env ]] || die "client/.env not found; set up the client first (README Part 2)"
 [[ -f $TOML ]] || die "$TOML not found; copy it from client/frpc.toml.example (README Part 2)"
 
-echo
-echo "frpc setup: which services frpc exposes, and how it reaches them"
-echo
+title "frpc: services and networks"
 mapfile -t current < <(connected_networks)
 if (( ${#current[@]} )); then
-  echo "Network mode: app networks (${current[*]})"
+  kv "Network mode" "app networks (${current[*]})"
   DEFAULT_IP=""
 else
-  echo "Network mode: host networking (default)"
+  kv "Network mode" "host networking (default)"
   DEFAULT_IP="127.0.0.1"
 fi
 n_proxies=$(proxies | wc -l)
-echo "Proxies in frpc.toml: $n_proxies$( (( n_proxies )) && echo " ($(proxies | cut -f1 | paste -sd' '))")"
+kv "Proxies" "$n_proxies$( (( n_proxies )) && echo " ($(proxies | cut -f1 | paste -sd' '))")"
 echo
 pick "What do you want to do?" \
   "Connect frpc to more app networks (keeps existing ones)" \
@@ -318,7 +313,7 @@ pick "What do you want to do?" \
 
 case $PICKED in
   Check*)
-    if check; then echo; info "All good."; else echo; die "problems found (see above)"; fi
+    checks
     ;;
 
   Add*)
@@ -334,32 +329,40 @@ case $PICKED in
         [[ $(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c") == host ]] || continue
         rows+=("$c (host networking)"$'\t'"127.0.0.1"$'\t'""$'\t'"$c")
       done < <(docker ps --format '{{.Names}}')
-      echo "Host networking: services must listen on (or publish a port to) this machine."
-      echo "For apps in other compose projects, use 1) Connect instead; no ports need publishing."
+      hint "Host networking: services must listen on (or publish a port to) this machine."
+      hint "For apps in other compose projects, use 1) Connect instead; no ports need publishing."
     fi
-    add_services "${rows[@]}" || { echo "Nothing was added."; exit 0; }
+    add_services "${rows[@]}" || { hint "Nothing was added."; exit 0; }
     recreate_and_check
     ;;
 
   Back*)
     (( ${#current[@]} )) || { info "Already on host networking; nothing to change."; exit 0; }
-    ask_yn "Remove $OVR (leave ${current[*]}) and return to host networking?" y || exit 0
+    section "Planned changes"
+    change "$OVR" "remove (leave ${current[*]}; back to host networking)"
+    echo
+    ask_yn "Apply this change?" y || { hint "Nothing was changed."; exit 0; }
     write_override
-    info "Removed $OVR. Proxies should use localIP = \"127.0.0.1\" again."
+    info "Removed $OVR."
+    next "Proxies should use ${BOLD}localIP = \"127.0.0.1\"${RESET} again"
     recreate_and_check
     ;;
 
   Disconnect*)
     (( ${#current[@]} )) || { info "frpc isn't connected to any app network."; exit 0; }
+    section "Disconnect"
     pick "Disconnect from which network?" "${current[@]}"
     drop=$PICKED
     keep=()
     for n in "${current[@]}"; do [[ $n == "$drop" ]] || keep+=("$n"); done
     if (( ${#keep[@]} == 0 )); then
-      echo "That's the last app network, so frpc will return to host networking."
+      note "That's the last app network, so frpc will return to host networking."
     fi
-    echo "Proxies pointing at containers on $drop will stop working; remove them from $TOML."
-    ask_yn "Disconnect frpc from $drop?" y || exit 0
+    note "Proxies pointing at containers on $drop will stop working; remove them from $TOML."
+    section "Planned changes"
+    change "$OVR" "frpc leaves $drop"
+    echo
+    ask_yn "Apply this change?" y || { hint "Nothing was changed."; exit 0; }
     write_override "${keep[@]}"
     info "Updated $OVR."
     recreate_and_check
@@ -383,22 +386,20 @@ case $PICKED in
       done
     done < <(docker ps --format '{{.Names}}')
 
+    section "App networks"
     if (( ${#current[@]} )); then
-      echo "Already connected (kept): ${current[*]}"
-      echo
+      kv "Kept" "${current[*]}"
     fi
     if (( ${#hostmode[@]} )); then
-      echo "These containers use host networking, so there's no network to join."
-      echo "frpc reaches them on 127.0.0.1 in the default host mode: ${hostmode[*]}"
-      echo
+      hint "  Host-networked containers have no network to join; frpc reaches them on"
+      hint "  127.0.0.1 in the default host mode: ${hostmode[*]}"
     fi
 
     # Pick one or more networks: one per app whose services frpc should expose.
     other="Enter a network name myself"
     done_opt="Done choosing networks"
     if (( ${#on_net[@]} == 0 )); then
-      echo "No other running app networks found. Start the apps first (docker compose up -d in each folder)."
-      echo
+      note "No other running app networks found. Start the apps first (docker compose up -d in each folder)."
     fi
     added=()
     while :; do
@@ -406,7 +407,7 @@ case $PICKED in
       for n in $(printf '%s\n' "${!on_net[@]}" | sort); do
         [[ " ${added[*]} " == *" $n "* ]] || options+=("$n  (${on_net[$n]})")
       done
-      (( ${#options[@]} )) && echo "Running apps' networks:"
+      (( ${#options[@]} )) && hint "Running apps' networks:"
       if (( ${#added[@]} )); then
         pick "Add another network?" "$done_opt" "${options[@]}" "$other"
       else
@@ -415,28 +416,26 @@ case $PICKED in
       [[ $PICKED == "$done_opt" ]] && break
       net=${PICKED%%  (*}
       if [[ $PICKED == "$other" ]]; then read -rp "Network name: " net || die "no input"; fi
-      if ! valid_name "$net"; then echo "  Invalid network name: '$net'"; continue; fi
-      if ! docker network inspect "$net" >/dev/null 2>&1; then echo "  Network '$net' doesn't exist (docker network ls)."; continue; fi
-      if [[ " ${current[*]} ${added[*]} " == *" $net "* ]]; then echo "  frpc is already on $net."; else added+=("$net"); fi
-      echo "  Selected: ${added[*]:-none}"
+      if ! valid_name "$net"; then echo "  ${YELLOW}Invalid network name: '$net'${RESET}"; continue; fi
+      if ! docker network inspect "$net" >/dev/null 2>&1; then echo "  ${YELLOW}Network '$net' doesn't exist (docker network ls).${RESET}"; continue; fi
+      if [[ " ${current[*]} ${added[*]} " == *" $net "* ]]; then echo "  ${YELLOW}frpc is already on $net.${RESET}"; else added+=("$net"); fi
+      echo "  ${GREEN}Selected:${RESET} ${BOLD}${added[*]:-none}${RESET}"
       echo
     done
-    (( ${#added[@]} )) || { echo "Nothing selected; nothing was changed."; exit 0; }
+    (( ${#added[@]} )) || { hint "Nothing selected; nothing was changed."; exit 0; }
 
     if (( ${#current[@]} == 0 )); then
-      echo
-      echo "Note: this moves frpc off host networking. Proxies must then use container"
-      echo "names for localIP; 127.0.0.1 will mean frpc's own container."
+      note "This moves frpc off host networking. Proxies must then use container names"
+      note "for localIP; 127.0.0.1 will mean frpc's own container."
       if (( $(active_visitors) )); then
-        echo "frpc.toml also has [[visitors]], which won't be reachable from this machine anymore."
+        note "frpc.toml also has [[visitors]], which won't be reachable from this machine anymore."
       fi
     fi
 
+    section "Planned changes"
+    change "$OVR" "frpc joins ${current[*]:+${current[*]} }${BOLD}${added[*]}${RESET}"
     echo
-    echo "Planned change:"
-    echo "  $OVR: frpc joins ${current[*]:+${current[*]} }${added[*]}"
-    echo
-    ask_yn "Apply this change?" y || { echo "Nothing was changed."; exit 0; }
+    ask_yn "Apply this change?" y || { hint "Nothing was changed."; exit 0; }
     write_override "${current[@]}" "${added[@]}"
     info "Updated $OVR."
 

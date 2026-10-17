@@ -17,8 +17,10 @@ CA_DAYS=1825
 CERT_DAYS=365
 umask 077
 
+. scripts/lib.sh
+
 need_ca() {
-  [[ -f $PKI/ca.key && -f $PKI/ca.crt ]] || { echo "No CA found; run: $0 ca" >&2; exit 1; }
+  [[ -f $PKI/ca.key && -f $PKI/ca.crt ]] || die "no CA found in $PKI/; create one first: ${BOLD}$0 ca${RESET}"
 }
 
 sign() { # <out-prefix> <subject> <extfile>
@@ -31,18 +33,19 @@ sign() { # <out-prefix> <subject> <extfile>
 
 case "${1:-}" in
   ca)
-    [[ -e $PKI/ca.key ]] && { echo "CA already exists in $PKI/" >&2; exit 1; }
+    [[ -e $PKI/ca.key ]] && die "a CA already exists in $PKI/"
     mkdir -p $PKI
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    out=$(openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
       -keyout $PKI/ca.key -out $PKI/ca.crt -days $CA_DAYS -sha256 \
       -subj "/CN=${CA_NAME:-Private CA}" \
       -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
-      -addext "keyUsage=critical,keyCertSign,cRLSign"
-    echo "CA created: $PKI/ca.crt (keep $PKI/ca.key offline)"
+      -addext "keyUsage=critical,keyCertSign,cRLSign" 2>&1) || die "openssl failed: $out"
+    info "CA created: $PKI/ca.crt ${RESET}${DIM}(\"${CA_NAME:-Private CA}\")${RESET}"
+    note "Keep ${BOLD}$PKI/ca.key${RESET} offline once you've issued the certs you need."
     ;;
 
   server)
-    shift; [[ $# -ge 1 ]] || { echo "usage: $0 server <dns-name>..." >&2; exit 1; }
+    shift; [[ $# -ge 1 ]] || die "usage: $0 server <dns-name>..."
     need_ca
     mkdir -p $TLS
     # The container (uid 65532) must be able to enter the dir; umask 077 would
@@ -60,15 +63,15 @@ case "${1:-}" in
     cp $PKI/ca.crt $TLS/ca.crt
     chmod 0444 $TLS/ca.crt $TLS/server.crt
     chmod 0400 $TLS/server.key
-    echo "Server cert written to $TLS/. The container runs as uid 65532, so run:"
-    echo "  sudo chown 65532:65532 $TLS/server.key"
+    info "Server cert written to $TLS/ ${RESET}${DIM}(valid $CERT_DAYS days for: $*)${RESET}"
+    next "The container runs as uid 65532, so run: ${BOLD}sudo chown 65532:65532 $TLS/server.key${RESET}"
     ;;
 
   client)
-    shift; [[ $# -eq 1 ]] || { echo "usage: $0 client <name>" >&2; exit 1; }
+    shift; [[ $# -eq 1 ]] || die "usage: $0 client <name>"
     need_ca
     dir=$PKI/clients/$1
-    [[ -e $dir ]] && { echo "$dir already exists" >&2; exit 1; }
+    [[ -e $dir ]] && die "$dir already exists (to re-issue: rm -rf $dir $dir.tar.gz)"
     mkdir -p "$dir"
     ext=$(mktemp)
     printf '%s\n' "basicConstraints=critical,CA:FALSE" \
@@ -77,8 +80,9 @@ case "${1:-}" in
     cp $PKI/ca.crt "$dir/ca.crt"
     # Single archive for transfer; contains the private key, so it's 0600 (umask).
     tar -czf "$dir.tar.gz" -C "$dir" ca.crt client.crt client.key
-    echo "Client bundle: $dir.tar.gz (ca.crt, client.crt, client.key)"
-    echo "Copy it to the client securely and unpack into client/tls/ (see README)."
+    info "Client bundle: $dir.tar.gz ${RESET}${DIM}(ca.crt, client.crt, client.key; valid $CERT_DAYS days)${RESET}"
+    next "Copy it to the client securely (it contains a private key), e.g. ${BOLD}scp $dir.tar.gz user@$1:~/${RESET}"
+    next "Unpack it into client/tls/ there (README Part 2, step 2)"
     ;;
 
   *)
