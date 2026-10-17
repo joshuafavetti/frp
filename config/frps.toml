@@ -21,6 +21,10 @@ auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
 allowPorts        = [{ start = 6000, end = 6009 }]
 maxPortsPerClient = 5
 
+# HTTP vhost for websites behind Nginx Proxy Manager (see README Part 4).
+# Do NOT publish this port; NPM reaches it over the shared "proxy" network.
+# vhostHTTPPort = 8080
+
 detailedErrorsToClient = false
 
 log.to    = "console"

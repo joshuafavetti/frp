@@ -15,6 +15,8 @@ Docker Compose setup for an [frp](https://github.com/fatedier/frp) server (`frps
 | **Client** | Machine whose service you want to reach | `frpc` with `[[proxies]]` |
 | **Visitor** | Machine you connect *from* (stcp only) | `frpc` with `[[visitors]]` |
 
+To host public websites on multiple domains through Nginx Proxy Manager, see [Part 4](#part-4-websites-via-nginx-proxy-manager).
+
 Security model:
 
 - **Certificates:** every client and visitor needs a cert signed by your CA (mTLS) **and** the shared token.
@@ -196,6 +198,116 @@ Then on the **server**, uncomment or add `- "6000:6000"` under `ports:` in `comp
 
 ---
 
+## Part 4: Websites via Nginx Proxy Manager
+
+Use this to serve websites on any number of domains from apps running on clients. Nginx Proxy Manager (NPM) handles public HTTPS and Let's Encrypt certificates. frps routes each request to the right client by its `Host` header.
+
+```
+internet ──443──► NPM ──► frps:8080 (vhost, internal only) ──► frpc ──► app on client
+frpc ──7000 (mTLS, direct, NOT through NPM)──► frps
+```
+
+Port 7000 stays published directly from frps. Don't route it through NPM, not even with NPM's "Streams" feature.
+
+### Server: one-time setup
+
+**1. Create a shared Docker network:**
+
+```bash
+docker network create proxy
+```
+
+**2. Enable the vhost port** in `config/frps.toml` by uncommenting:
+
+```toml
+vhostHTTPPort = 8080
+```
+
+Do **not** add 8080 to `ports:` in `compose.yaml`. Only NPM should be able to reach it.
+
+**3. Join frps to the network.** In `compose.yaml`, uncomment `networks: [proxy]` under the service and the `networks:` block at the bottom. Then run:
+
+```bash
+docker compose up -d
+```
+
+**4. Run NPM on the same network.** If NPM is already running, add `networks: [proxy]` plus the same external `networks:` block to its compose file. Otherwise, create a separate folder, for example `~/npm/compose.yaml`:
+
+```yaml
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:2.16.0   # pin a version; never use :latest
+    container_name: npm
+    restart: unless-stopped
+    ports:
+      - "80:80"            # needed for Let's Encrypt
+      - "443:443"
+      - "127.0.0.1:81:81"  # admin UI: localhost only
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+```
+
+```bash
+cd ~/npm && docker compose up -d
+```
+
+**5. Open the firewall** for inbound **TCP 80 and 443**. Leave port 81 closed.
+
+**6. Secure the admin UI.** It's only reachable through an SSH tunnel:
+
+```bash
+ssh -L 8181:127.0.0.1:81 user@your-server
+```
+
+Open http://localhost:8181 and set a strong admin email and password straight away. Never publish port 81.
+
+### Adding a website
+
+Do these three steps for each site.
+
+**1. DNS:** create an A/AAAA record pointing the domain, for example `app1.com`, at the server's public IP.
+
+**2. Client:** add an `http` proxy to the client's `frpc.toml`, then run `docker restart frpc`:
+
+```toml
+[[proxies]]
+name          = "app1"                         # unique across all clients
+type          = "http"
+localIP       = "127.0.0.1"
+localPort     = 3000                           # the app's local port
+customDomains = ["app1.com", "www.app1.com"]
+```
+
+**3. NPM:** go to **Hosts → Proxy Hosts → Add Proxy Host**:
+
+| Tab | Field | Value |
+|---|---|---|
+| Details | Domain Names | `app1.com`, `www.app1.com` (must match `customDomains` exactly) |
+| | Scheme | `http` |
+| | Forward Hostname / IP | `frps` |
+| | Forward Port | `8080` |
+| | Block Common Exploits | On |
+| | Websockets Support | On, if the app uses websockets |
+| SSL | SSL Certificate | Request a new certificate (Let's Encrypt) |
+| | Force SSL, HTTP/2, HSTS | On |
+
+To require a login in front of a site, create an **Access List** in NPM and attach it to the proxy host.
+
+### Notes
+
+- **These sites are public.** Unlike stcp, anyone can reach them, so each app needs its own authentication or an NPM Access List.
+- **frps can't limit which domains a client claims.** A client with a valid cert could register another client's domain. NPM only forwards domains you've added as proxy hosts, which limits the damage, and only clients you issued certs to can connect at all.
+- **NPM is now the most exposed component.** It runs as root inside its container and has had security bugs. Keep it pinned and updated on purpose, and watch its releases.
+- **Traffic is encrypted end to end:** HTTPS from browser to NPM, then frp's mTLS tunnel from frps to the client. Only the hop from NPM to frps on the private Docker network is plain HTTP.
+
+---
+
 ## Maintenance
 
 **Upgrading frp:**
@@ -224,3 +336,6 @@ Short cert lifetimes keep the exposure window small.
 | `port not allowed` | `remotePort` is outside `allowPorts` |
 | `open /etc/frp/tls/...: permission denied` | Key isn't owned by uid 65532 (`sudo chown 65532:65532 ...`) |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
+| NPM shows `502 Bad Gateway` | frps and NPM aren't on the same `proxy` network, or `vhostHTTPPort` isn't enabled |
+| frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
+| Let's Encrypt fails in NPM | DNS doesn't point at the server yet, or port 80 is blocked |
