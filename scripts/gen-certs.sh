@@ -2,16 +2,17 @@
 # Generate the mTLS PKI for frp.
 #
 #   scripts/gen-certs.sh ca                     # once: create the CA in pki/
-#   scripts/gen-certs.sh server <dns-name>...   # server cert -> tls/
+#   scripts/gen-certs.sh server <dns-name>...   # server cert -> server/tls/
 #   scripts/gen-certs.sh client <name>          # client cert -> pki/clients/<name>/
 #
 # pki/ holds the CA private key: move it offline once certs are issued.
-# tls/ is what the frps container mounts.
+# server/tls/ is what the frps container mounts; copy a client bundle to
+# client/tls/ on the client machine.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PKI=pki
-TLS=tls
+TLS=server/tls
 CA_DAYS=1825
 CERT_DAYS=365
 umask 077
@@ -72,6 +73,6 @@ case "${1:-}" in
     ;;
 
   *)
-    sed -n '2,10p' "$0"; exit 1
+    sed -n '2,11p' "$0"; exit 1
     ;;
 esac

@@ -1,0 +1,56 @@
+# frpc client config — https://github.com/fatedier/frp
+# Connection settings come from .env; add proxies/visitors below.
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = 7000
+
+# mTLS: present our client cert and only trust a server signed by our CA.
+transport.tls.enable        = true
+transport.tls.certFile      = "/etc/frp/tls/client.crt"
+transport.tls.keyFile       = "/etc/frp/tls/client.key"
+transport.tls.trustedCaFile = "/etc/frp/tls/ca.crt"
+transport.tls.serverName    = "{{ .Envs.FRP_SERVER_ADDR }}"
+
+auth.method           = "token"
+auth.token            = "{{ .Envs.FRP_TOKEN }}"
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
+
+log.to    = "console"
+log.level = "info"
+
+# Nothing is exposed until you uncomment one of the examples below.
+# Proxy names must be unique across ALL clients on the server.
+
+# --- Private service (stcp): reachable only by a visitor with the secret ---
+# [[proxies]]
+# name      = "home-pc-ssh"
+# type      = "stcp"
+# secretKey = "{{ .Envs.FRP_STCP_SECRET }}"
+# localIP   = "127.0.0.1"
+# localPort = 22
+
+# --- Visitor: connect to another client's stcp service ---
+# Then reach it locally, e.g.: ssh -p 6000 user@127.0.0.1
+# [[visitors]]
+# name       = "home-pc-ssh-visitor"
+# type       = "stcp"
+# serverName = "home-pc-ssh"
+# secretKey  = "{{ .Envs.FRP_STCP_SECRET }}"
+# bindAddr   = "127.0.0.1"
+# bindPort   = 6000
+
+# --- Website via Nginx Proxy Manager on the server (http vhost) ---
+# [[proxies]]
+# name          = "app1"
+# type          = "http"
+# localIP       = "127.0.0.1"
+# localPort     = 3000
+# customDomains = ["app1.com", "www.app1.com"]
+
+# --- Public TCP port (open to the internet; remotePort must be in allowPorts) ---
+# [[proxies]]
+# name       = "game"
+# type       = "tcp"
+# localIP    = "127.0.0.1"
+# localPort  = 25565
+# remotePort = 6000

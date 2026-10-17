@@ -32,3 +32,10 @@ USER 65532:65532
 EXPOSE 7000
 ENTRYPOINT ["/usr/bin/frps"]
 CMD ["-c", "/etc/frp/frps.toml"]
+
+# ---------- client ----------
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS frpc
+COPY --from=fetch --chown=0:0 --chmod=0555 /frp/frpc /usr/bin/frpc
+USER 65532:65532
+ENTRYPOINT ["/usr/bin/frpc"]
+CMD ["-c", "/etc/frp/frpc.toml"]

@@ -1,6 +1,6 @@
-# frp server (hardened)
+# frp (hardened)
 
-Docker Compose setup for an [frp](https://github.com/fatedier/frp) server (`frps`), so you can reach services on machines behind NAT through a public server.
+Docker Compose setup for both sides of [frp](https://github.com/fatedier/frp): the **server** (`frps`) on a public host, and **clients** (`frpc`) on machines behind NAT. Use it to reach services on those machines, or to publish websites from them.
 
 ```
  [visitor]  ──┐                    ┌── [client]  ── service (e.g. ssh :22)
@@ -9,77 +9,88 @@ Docker Compose setup for an [frp](https://github.com/fatedier/frp) server (`frps
                    (public server)
 ```
 
-| Role | What it is | What it runs |
+| Role | What it is | Folder |
 |---|---|---|
-| **Server** | Public host, reachable on port 7000 | `frps`, using this repo |
-| **Client** | Machine whose service you want to reach | `frpc` with `[[proxies]]` |
-| **Visitor** | Machine you connect *from* (stcp only) | `frpc` with `[[visitors]]` |
+| **Server** | Public host, reachable on port 7000 | `server/` |
+| **Client** | Machine whose service you want to reach | `client/` with `[[proxies]]` |
+| **Visitor** | Machine you connect *from* (stcp only) | `client/` with `[[visitors]]` |
 
-To host public websites on multiple domains through Nginx Proxy Manager, see [Part 4](#part-4-websites-via-nginx-proxy-manager).
+One machine can be both a client and a visitor; just add both kinds of blocks to its `frpc.toml`.
 
-Security model:
+**Security model:**
 
-- **Certificates:** every client and visitor needs a cert signed by your CA (mTLS) **and** the shared token.
-- **stcp proxies:** services are never exposed on a public port; only a visitor with the matching `secretKey` can reach them.
-- **Container:** distroless, non-root, read-only, all capabilities dropped.
-- **Supply chain:** the frp release is checked against a hardcoded SHA-256, and base images are pinned by digest.
+- **Authentication:** every client needs a cert signed by your CA (mTLS) **and** the shared token.
+- **Private services (stcp):** never exposed on a public port; only a visitor with the matching `secretKey` can reach them.
+- **Containers:** both sides are distroless, non-root and read-only, with all capabilities dropped.
+- **Supply chain:** frp release tarballs are checked against a hardcoded SHA-256, and base images are pinned by digest.
+
+## Repo layout
+
+```
+Dockerfile               # builds both frps and frpc (shared, checksum-verified)
+scripts/gen-certs.sh     # CA, server and client certificates (run on the server)
+server/
+  compose.yaml
+  frps.toml.example      # copy to frps.toml
+  .env.example           # copy to .env
+client/
+  compose.yaml
+  frpc.toml.example      # copy to frpc.toml
+  .env.example           # copy to .env
+```
+
+Your own `frps.toml`, `frpc.toml`, `.env`, `tls/` and `pki/` are gitignored, so `git pull` never overwrites them.
 
 ---
 
 ## Part 1: Server
 
-Do this once, on the public host. It needs Docker with Compose and `openssl`.
+Do this once, on the public host. It needs Docker with Compose, and `openssl`.
 
-### 1. Clone and set the token
+### 1. Clone and configure
 
 ```bash
 git clone git@github.com:joshuafavetti/frp.git && cd frp
-cp .env.example .env
-sed -i "s/^FRP_TOKEN=.*/FRP_TOKEN=$(openssl rand -hex 32)/" .env
-chmod 600 .env
+cp server/frps.toml.example server/frps.toml
+cp server/.env.example server/.env
+sed -i "s/^FRP_TOKEN=.*/FRP_TOKEN=$(openssl rand -hex 32)/" server/.env
+chmod 600 server/.env
 ```
 
-Every client and visitor needs this token. Keep it safe.
+Every client needs `FRP_TOKEN`. Keep it safe.
 
 ### 2. Create the CA and server certificate
 
-Use the DNS name clients will connect to:
+Use the public DNS name clients will connect to:
 
 ```bash
 scripts/gen-certs.sh ca
 scripts/gen-certs.sh server frp.example.com
-sudo chown 65532:65532 tls/server.key   # container runs as uid 65532
+sudo chown 65532:65532 server/tls/server.key   # containers run as uid 65532
 ```
 
 ### 3. Open the firewall
 
-Allow inbound **TCP 7000**. If your clients have static IPs, allow those IPs only.
+Allow inbound **TCP 7000**. If your clients have static IPs, allow only those.
 
 ### 4. Start it
 
 ```bash
+cd server
 docker compose up -d --build
 docker compose logs -f   # expect: "frps started successfully"
 ```
 
-### 5. Issue a cert for each client and visitor
+### 5. Issue a cert for each client
 
-On the server, give each machine its own name:
+Run this from the repo root on the server, with one unique name per machine:
 
 ```bash
 scripts/gen-certs.sh client home-pc
 scripts/gen-certs.sh client laptop
 ```
 
-Each command creates `pki/clients/<name>/` containing `ca.crt`, `client.crt` and `client.key`.
-
-Copy that folder to the machine securely, for example:
-
-```bash
-scp -r pki/clients/home-pc user@home-pc:~/frpc/tls
-```
-
-Then give it the token from `.env` over a secure channel.
+Each command creates `pki/clients/<name>/` containing `ca.crt`, `client.crt` and `client.key`. You'll copy it to that machine in Part 2.
 
 ### 6. Protect the CA key
 
@@ -87,81 +98,80 @@ Once you've issued the certs you need, move `pki/ca.key` off the server, for exa
 
 ---
 
-## Part 2: Client (the machine with the service)
+## Part 2: Client
 
-This machine needs Docker. It only makes outbound connections to the server on port 7000.
+Do this on each machine behind NAT. It needs Docker with Compose, and only makes outbound connections to the server on port 7000.
 
-### 1. Set up the folder
+### 1. Clone and configure
 
 ```bash
-mkdir -p ~/frpc && cd ~/frpc
-# tls/ should already be here from server step 5
-sudo chown -R 65532:65532 tls && sudo chmod 400 tls/client.key
-
-cat > .env <<EOF
-FRP_TOKEN=<token from the server's .env>
-FRP_STCP_SECRET=$(openssl rand -hex 32)
-EOF
+git clone git@github.com:joshuafavetti/frp.git && cd frp/client
+cp frpc.toml.example frpc.toml
+cp .env.example .env
 chmod 600 .env
 ```
 
-`FRP_STCP_SECRET` is the per-service password. The visitor needs the same value.
+Edit `.env`:
 
-### 2. Write `frpc.toml`
+| Variable | Value |
+|---|---|
+| `FRP_SERVER_ADDR` | The server's DNS name, same as in `gen-certs.sh server` |
+| `FRP_TOKEN` | The `FRP_TOKEN` from the server's `server/.env` |
+| `FRP_STCP_SECRET` | `openssl rand -hex 32`. Needed only for stcp, and the visitor must use the same value |
+
+### 2. Install the certificate
+
+Copy this machine's bundle from the server, either by running this from the server:
+
+```bash
+scp -r pki/clients/home-pc user@home-pc:~/frp/client/tls
+```
+
+or by copying it into `client/tls/` by hand. Then, on the client:
+
+```bash
+sudo chown -R 65532:65532 tls && sudo chmod 400 tls/client.key
+```
+
+### 3. Choose what to expose
+
+`frpc.toml` has commented examples. Uncomment the one you need:
+
+| Example | Use it for | Public? |
+|---|---|---|
+| `stcp` proxy | Private access to a service, e.g. SSH | No; a visitor is needed (Part 3) |
+| `http` proxy | A website on your domain via NPM (Part 4) | Yes |
+| `tcp` proxy | A raw public port, e.g. a game server (Part 5) | Yes |
+
+For example, private SSH:
 
 ```toml
-serverAddr = "frp.example.com"
-serverPort = 7000
-
-transport.tls.enable        = true
-transport.tls.certFile      = "/etc/frp/tls/client.crt"
-transport.tls.keyFile       = "/etc/frp/tls/client.key"
-transport.tls.trustedCaFile = "/etc/frp/tls/ca.crt"
-transport.tls.serverName    = "frp.example.com"   # must match the server cert
-
-auth.method           = "token"
-auth.token            = "{{ .Envs.FRP_TOKEN }}"
-auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
-
-# Expose local SSH privately. Add one [[proxies]] block per service.
 [[proxies]]
-name      = "home-pc-ssh"           # must be unique across all clients
+name      = "home-pc-ssh"        # must be unique across all clients
 type      = "stcp"
 secretKey = "{{ .Envs.FRP_STCP_SECRET }}"
 localIP   = "127.0.0.1"
 localPort = 22
 ```
 
-### 3. Run it
-
-This uses frp's official image, pinned by digest, with the same hardening as the server:
+### 4. Start it
 
 ```bash
-docker run -d --name frpc --restart unless-stopped \
-  --network host \
-  --user 65532:65532 --read-only --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --pids-limit 100 --memory 64m \
-  --env-file .env \
-  -v $PWD/frpc.toml:/etc/frp/frpc.toml:ro \
-  -v $PWD/tls:/etc/frp/tls:ro \
-  ghcr.io/fatedier/frpc:v0.71.1@sha256:7a0a18bc9c83dc106a7e5213a890f521affdf90d595829c56b0ed8481377d50e \
-  -c /etc/frp/frpc.toml
-
-docker logs -f frpc   # expect: "start proxy success"
+docker compose up -d --build
+docker compose logs -f   # expect: "login to server success" and "start proxy success"
 ```
 
-`--network host` lets `localIP = "127.0.0.1"` reach services on the host. frpc only makes outbound connections, so this doesn't open anything.
+After editing `frpc.toml`, apply the changes with `docker compose restart`.
+
+The client uses `network_mode: host`, so `localIP = "127.0.0.1"` reaches services on the machine itself. frpc only makes outbound connections, so this doesn't open anything.
 
 ---
 
-## Part 3: Visitor (the machine you connect from)
+## Part 3: Visitor (connecting to an stcp service)
 
-You need this for `stcp` proxies. Set up the folder exactly as in Part 2 step 1, with its own cert from server step 5. In `.env`, use the **same** `FRP_STCP_SECRET` as the client.
+The visitor is the machine you connect *from*, for example your laptop. Set it up exactly like Part 2, with its own cert from server step 5. In `.env`, use the **same** `FRP_STCP_SECRET` as the client whose service you want to reach.
 
-### `frpc.toml`
-
-Use the same server, TLS and auth lines as the client, then:
+In `frpc.toml`, uncomment the visitor block:
 
 ```toml
 [[visitors]]
@@ -173,7 +183,7 @@ bindAddr   = "127.0.0.1"            # local only
 bindPort   = 6000
 ```
 
-Run it with the same `docker run` command as the client, then connect:
+Start it with `docker compose up -d --build`, then connect:
 
 ```bash
 ssh -p 6000 user@127.0.0.1
@@ -181,26 +191,9 @@ ssh -p 6000 user@127.0.0.1
 
 ---
 
-## Alternative: public `tcp` proxy (no visitor)
-
-If a service needs to be reachable by anyone, for example a game server, use `type = "tcp"` on the client:
-
-```toml
-[[proxies]]
-name       = "game"
-type       = "tcp"
-localIP    = "127.0.0.1"
-localPort  = 25565
-remotePort = 6000      # must be within allowPorts in config/frps.toml (6000-6009)
-```
-
-Then on the **server**, uncomment or add `- "6000:6000"` under `ports:` in `compose.yaml` and run `docker compose up -d`. The port is now open to the internet, so the service must handle its own authentication.
-
----
-
 ## Part 4: Websites via Nginx Proxy Manager
 
-Use this to serve websites on any number of domains from apps running on clients. Nginx Proxy Manager (NPM) handles public HTTPS and Let's Encrypt certificates. frps routes each request to the right client by its `Host` header.
+Use this to serve websites on any number of domains from apps running on clients. Nginx Proxy Manager (NPM) on the server handles public HTTPS and Let's Encrypt. frps routes each request to the right client by its `Host` header.
 
 ```
 internet ──443──► NPM ──► frps:8080 (vhost, internal only) ──► frpc ──► app on client
@@ -217,18 +210,18 @@ Port 7000 stays published directly from frps. Don't route it through NPM, not ev
 docker network create proxy
 ```
 
-**2. Enable the vhost port** in `config/frps.toml` by uncommenting:
+**2. Enable the vhost port** in `server/frps.toml` by uncommenting:
 
 ```toml
 vhostHTTPPort = 8080
 ```
 
-Do **not** add 8080 to `ports:` in `compose.yaml`. Only NPM should be able to reach it.
+Do **not** add 8080 to `ports:` in `server/compose.yaml`. Only NPM should be able to reach it.
 
-**3. Join frps to the network.** In `compose.yaml`, uncomment `networks: [proxy]` under the service and the `networks:` block at the bottom. Then run:
+**3. Join frps to the network.** In `server/compose.yaml`, uncomment `networks: [proxy]` under the service and the `networks:` block at the bottom. Then run:
 
 ```bash
-docker compose up -d
+cd server && docker compose up -d
 ```
 
 **4. Run NPM on the same network.** If NPM is already running, add `networks: [proxy]` plus the same external `networks:` block to its compose file. Otherwise, create a separate folder, for example `~/npm/compose.yaml`:
@@ -273,7 +266,7 @@ Do these three steps for each site.
 
 **1. DNS:** create an A/AAAA record pointing the domain, for example `app1.com`, at the server's public IP.
 
-**2. Client:** add an `http` proxy to the client's `frpc.toml`, then run `docker restart frpc`:
+**2. Client:** uncomment or add an `http` proxy in `client/frpc.toml`, then run `docker compose restart`:
 
 ```toml
 [[proxies]]
@@ -308,14 +301,36 @@ To require a login in front of a site, create an **Access List** in NPM and atta
 
 ---
 
+## Part 5: Public TCP port (no visitor)
+
+If a raw TCP service needs to be reachable by anyone, for example a game server:
+
+**1. Client:** uncomment the `tcp` example in `client/frpc.toml`:
+
+```toml
+[[proxies]]
+name       = "game"
+type       = "tcp"
+localIP    = "127.0.0.1"
+localPort  = 25565
+remotePort = 6000      # must be within allowPorts in server/frps.toml (6000-6009)
+```
+
+**2. Server:** uncomment or add `- "6000:6000"` under `ports:` in `server/compose.yaml`, open the port in the firewall, then run `docker compose up -d`.
+
+The port is now open to the internet, so the service must handle its own authentication.
+
+---
+
 ## Maintenance
 
-**Upgrading frp:**
+**Upgrading frp** (both sides build from the same `Dockerfile`):
 
-1. Set `FRP_VERSION` in `Dockerfile` and the `image:` tag in `compose.yaml`.
+1. Set `FRP_VERSION` in `Dockerfile`, and the `image:` tag in `server/compose.yaml` and `client/compose.yaml`.
 2. Replace both `FRP_SHA256_*` values with the ones from the release's `frp_sha256_checksums.txt`.
-3. On the server, run `docker compose up -d --build`.
-4. On clients and visitors, update the `ghcr.io/fatedier/frpc` tag and digest.
+3. Commit and push. Then on each machine, run `git pull`, followed by `docker compose up -d --build` in `server/` or `client/`.
+
+**Pulling repo updates:** your configs and secrets are gitignored, so `git pull` is safe. Afterwards, check the `.example` files for new options you might want.
 
 **Revoking a client:** frp doesn't support revocation lists, so do one of the following:
 
@@ -324,17 +339,19 @@ To require a login in front of a site, create an **Access List** in NPM and atta
 
 Short cert lifetimes keep the exposure window small.
 
-**Host hardening:** keep the `docker` group small. Its members can read `FRP_TOKEN` with `docker inspect`.
+**Host hardening:** on every machine, keep the `docker` group small. Its members can read `FRP_TOKEN` with `docker inspect`.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
 | `tls: bad certificate` / `certificate signed by unknown authority` | Client is using a cert or `ca.crt` from a different CA |
-| `x509: certificate is valid for X, not Y` | `serverName` in frpc.toml doesn't match the name given to `gen-certs.sh server` |
+| `x509: certificate is valid for X, not Y` | `FRP_SERVER_ADDR` doesn't match the name given to `gen-certs.sh server` |
 | `token in login doesn't match` | `FRP_TOKEN` differs between server and client |
 | `port not allowed` | `remotePort` is outside `allowPorts` |
+| `proxy name [...] is already in use` | Two clients use the same proxy `name` |
 | `open /etc/frp/tls/...: permission denied` | Key isn't owned by uid 65532 (`sudo chown 65532:65532 ...`) |
+| `bind source path does not exist: .../frpc.toml` (or `frps.toml`, `tls`) | You haven't copied the `.example` file, or haven't installed the certs, yet |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
 | NPM shows `502 Bad Gateway` | frps and NPM aren't on the same `proxy` network, or `vhostHTTPPort` isn't enabled |
 | frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |

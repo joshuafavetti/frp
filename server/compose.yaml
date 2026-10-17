@@ -1,7 +1,7 @@
 services:
   frps:
     build:
-      context: .
+      context: ..
       target: frps
     image: frps:0.71.1
     container_name: frps
@@ -22,8 +22,16 @@ services:
       FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN in .env}
 
     volumes:
-      - ./config/frps.toml:/etc/frp/frps.toml:ro
-      - ./tls:/etc/frp/tls:ro
+      # Long syntax: fail clearly if a path is missing instead of
+      # silently creating an empty directory in its place.
+      - type: bind
+        source: ./frps.toml
+        target: /etc/frp/frps.toml
+        read_only: true
+      - type: bind
+        source: ./tls
+        target: /etc/frp/tls
+        read_only: true
 
     ports:
       - "7000:7000"

@@ -1,0 +1,45 @@
+services:
+  frpc:
+    build:
+      context: ..
+      target: frpc
+    image: frpc:0.71.1
+    container_name: frpc
+    restart: unless-stopped
+
+    # Host networking so localIP = "127.0.0.1" reaches services on this
+    # machine and visitors bind on the host. frpc only dials out, so this
+    # opens nothing inbound.
+    network_mode: host
+
+    # Runtime hardening
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 64m
+    cpus: 0.5
+
+    environment:
+      FRP_SERVER_ADDR: ${FRP_SERVER_ADDR:?set FRP_SERVER_ADDR in .env}
+      FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN in .env}
+      FRP_STCP_SECRET: ${FRP_STCP_SECRET:-}
+
+    volumes:
+      # Long syntax: fail clearly if a path is missing instead of
+      # silently creating an empty directory in its place.
+      - type: bind
+        source: ./frpc.toml
+        target: /etc/frp/frpc.toml
+        read_only: true
+      - type: bind
+        source: ./tls
+        target: /etc/frp/tls
+        read_only: true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

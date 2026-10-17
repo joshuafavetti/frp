@@ -1,3 +1,5 @@
 .env
 tls/
 pki/
+server/frps.toml
+client/frpc.toml
