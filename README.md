@@ -31,6 +31,7 @@ Dockerfile               # builds both frps and frpc (shared, checksum-verified)
 scripts/gen-certs.sh     # CA, server and client certificates (run on the server)
 server/
   compose.yaml
+  compose.npm.yaml       # optional: join NPM's external network
   frps.toml.example      # copy to frps.toml
   .env.example           # copy to .env
 client/
@@ -210,27 +211,23 @@ Port 7000 stays published directly from frps. Don't route it through NPM, not ev
 
 ### Server: one-time setup
 
-**1. Create a shared Docker network:**
+frps joins the Docker network that NPM is already on, so NPM can reach it at `http://frps:8080`. That network is *external* to this compose project, and NPM owns it. The override file `server/compose.npm.yaml` handles this, and you turn it on from `.env`, so you don't edit `compose.yaml`.
+
+**1. Find NPM's network.**
+
+*If NPM is already running*, list its networks:
+
+```bash
+docker inspect npm -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+Use your NPM container's name if it isn't `npm`; `docker ps` shows it. The output is usually `proxy`, or `<folder>_default` such as `npm_default` if NPM's compose file doesn't define a network. Use that name in step 3.
+
+*If NPM isn't running yet*, create a network and start NPM on it. Make a separate folder, for example `~/npm/compose.yaml`:
 
 ```bash
 docker network create proxy
 ```
-
-**2. Enable the vhost port** in `server/frps.toml` by uncommenting:
-
-```toml
-vhostHTTPPort = 8080
-```
-
-Do **not** add 8080 to `ports:` in `server/compose.yaml`. Only NPM should be able to reach it.
-
-**3. Join frps to the network.** In `server/compose.yaml`, uncomment `networks: [proxy]` under the service and the `networks:` block at the bottom. Then run:
-
-```bash
-cd server && docker compose up -d
-```
-
-**4. Run NPM on the same network.** If NPM is already running, add `networks: [proxy]` plus the same external `networks:` block to its compose file. Otherwise, create a separate folder, for example `~/npm/compose.yaml`:
 
 ```yaml
 services:
@@ -256,9 +253,34 @@ networks:
 cd ~/npm && docker compose up -d
 ```
 
-**5. Open the firewall** for inbound **TCP 80 and 443**. Leave port 81 closed.
+**2. Enable the vhost port** in `server/frps.toml` by uncommenting:
 
-**6. Secure the admin UI.** It's only reachable through an SSH tunnel:
+```toml
+vhostHTTPPort = 8080
+```
+
+Do **not** add 8080 to `ports:` in `server/compose.yaml`. Only NPM should be able to reach it.
+
+**3. Join frps to NPM's network.** In `server/.env`, uncomment and set:
+
+```bash
+COMPOSE_FILE=compose.yaml:compose.npm.yaml
+PROXY_NETWORK=proxy          # the name from step 1
+```
+
+Then recreate frps and check it joined:
+
+```bash
+cd server && docker compose up -d
+docker inspect frps -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+# expect: server_default proxy
+```
+
+frps stays on its own default network too; the published port 7000 works the same. If the network doesn't exist, compose stops with `network proxy declared as external, but could not be found`. Check the name from step 1.
+
+**4. Open the firewall** for inbound **TCP 80 and 443**. Leave port 81 closed.
+
+**5. Secure the admin UI.** It's only reachable through an SSH tunnel:
 
 ```bash
 ssh -L 8181:127.0.0.1:81 user@your-server
@@ -359,6 +381,6 @@ Short cert lifetimes keep the exposure window small.
 | `open /etc/frp/tls/...: permission denied` | The `tls/` folder isn't `755` (`chmod 755 tls`), or the key isn't owned by uid 65532 (`sudo chown 65532:65532 tls/*.key`) |
 | `bind source path does not exist: .../frpc.toml` (or `frps.toml`, `tls`) | You haven't copied the `.example` file, or haven't installed the certs, yet |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
-| NPM shows `502 Bad Gateway` | frps and NPM aren't on the same `proxy` network, or `vhostHTTPPort` isn't enabled |
+| NPM shows `502 Bad Gateway` | frps isn't on NPM's network (check `COMPOSE_FILE` / `PROXY_NETWORK` in `server/.env`), or `vhostHTTPPort` isn't enabled |
 | frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
 | Let's Encrypt fails in NPM | DNS doesn't point at the server yet, or port 80 is blocked |

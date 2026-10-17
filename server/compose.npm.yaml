@@ -1,0 +1,15 @@
+# Optional override: attach frps to an existing external Docker network so
+# Nginx Proxy Manager can reach the vhost port at http://frps:8080.
+# Enable with COMPOSE_FILE=compose.yaml:compose.npm.yaml in .env.
+
+services:
+  frps:
+    networks:
+      - default
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    # The network NPM is attached to: docker inspect npm -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK in .env}
