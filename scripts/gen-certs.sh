@@ -48,6 +48,9 @@ case "${1:-}" in
     # The container (uid 65532) must be able to enter the dir; umask 077 would
     # otherwise make it owner-only. The key itself stays 0400.
     chmod 0755 $TLS
+    # Re-issuing: the old files are read-only (and the key owned by 65532), so
+    # remove them first; that only needs write access to the directory.
+    rm -f $TLS/server.key $TLS/server.crt $TLS/ca.crt
     ext=$(mktemp)
     san=$(printf 'DNS:%s,' "$@"); san=${san%,}
     printf '%s\n' "basicConstraints=critical,CA:FALSE" \
