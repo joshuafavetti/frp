@@ -1,0 +1,38 @@
+services:
+  frps:
+    build:
+      context: .
+      target: frps
+    image: frps:0.71.1
+    container_name: frps
+    restart: unless-stopped
+
+    # Runtime hardening
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 128m
+    cpus: 0.5
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+
+    environment:
+      FRP_TOKEN: ${FRP_TOKEN:?set FRP_TOKEN in .env}
+
+    volumes:
+      - ./config/frps.toml:/etc/frp/frps.toml:ro
+      - ./tls:/etc/frp/tls:ro
+
+    ports:
+      - "7000:7000"
+      # Only publish remote ports you actually use (must be within allowPorts).
+      # With stcp proxies, nothing beyond 7000 needs to be published.
+      # - "6000:6000"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

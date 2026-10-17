@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Generate the mTLS PKI for frp.
+#
+#   scripts/gen-certs.sh ca                     # once: create the CA in pki/
+#   scripts/gen-certs.sh server <dns-name>...   # server cert -> tls/
+#   scripts/gen-certs.sh client <name>          # client cert -> pki/clients/<name>/
+#
+# pki/ holds the CA private key: move it offline once certs are issued.
+# tls/ is what the frps container mounts.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+PKI=pki
+TLS=tls
+CA_DAYS=1825
+CERT_DAYS=365
+umask 077
+
+need_ca() {
+  [[ -f $PKI/ca.key && -f $PKI/ca.crt ]] || { echo "No CA found; run: $0 ca" >&2; exit 1; }
+}
+
+sign() { # <out-prefix> <subject> <extfile>
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "$1.key" -out "$1.csr" -subj "$2" 2>/dev/null
+  openssl x509 -req -in "$1.csr" -CA $PKI/ca.crt -CAkey $PKI/ca.key -CAcreateserial \
+    -days $CERT_DAYS -sha256 -extfile "$3" -out "$1.crt" 2>/dev/null
+  rm -f "$1.csr" "$3"
+}
+
+case "${1:-}" in
+  ca)
+    [[ -e $PKI/ca.key ]] && { echo "CA already exists in $PKI/" >&2; exit 1; }
+    mkdir -p $PKI
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+      -keyout $PKI/ca.key -out $PKI/ca.crt -days $CA_DAYS -sha256 \
+      -subj "/CN=frp-ca" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign"
+    echo "CA created: $PKI/ca.crt (keep $PKI/ca.key offline)"
+    ;;
+
+  server)
+    shift; [[ $# -ge 1 ]] || { echo "usage: $0 server <dns-name>..." >&2; exit 1; }
+    need_ca
+    mkdir -p $TLS
+    ext=$(mktemp)
+    san=$(printf 'DNS:%s,' "$@"); san=${san%,}
+    printf '%s\n' "basicConstraints=critical,CA:FALSE" \
+      "keyUsage=critical,digitalSignature" "extendedKeyUsage=serverAuth" \
+      "subjectAltName=$san" > "$ext"
+    sign $TLS/server "/CN=$1" "$ext"
+    cp $PKI/ca.crt $TLS/ca.crt
+    chmod 0444 $TLS/ca.crt $TLS/server.crt
+    chmod 0400 $TLS/server.key
+    echo "Server cert written to $TLS/. The container runs as uid 65532, so run:"
+    echo "  sudo chown 65532:65532 $TLS/server.key"
+    ;;
+
+  client)
+    shift; [[ $# -eq 1 ]] || { echo "usage: $0 client <name>" >&2; exit 1; }
+    need_ca
+    dir=$PKI/clients/$1
+    [[ -e $dir ]] && { echo "$dir already exists" >&2; exit 1; }
+    mkdir -p "$dir"
+    ext=$(mktemp)
+    printf '%s\n' "basicConstraints=critical,CA:FALSE" \
+      "keyUsage=critical,digitalSignature" "extendedKeyUsage=clientAuth" > "$ext"
+    sign "$dir/client" "/CN=$1" "$ext"
+    cp $PKI/ca.crt "$dir/ca.crt"
+    echo "Client bundle in $dir/ (ca.crt, client.crt, client.key): copy it to the client securely."
+    ;;
+
+  *)
+    sed -n '2,10p' "$0"; exit 1
+    ;;
+esac

@@ -1,0 +1,34 @@
+# frps server config — https://github.com/fatedier/frp
+# Hardened defaults: mTLS required, token as second factor, dashboard off.
+
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# mTLS: only clients holding a cert signed by our CA can connect.
+transport.tls.force         = true
+transport.tls.certFile      = "/etc/frp/tls/server.crt"
+transport.tls.keyFile       = "/etc/frp/tls/server.key"
+transport.tls.trustedCaFile = "/etc/frp/tls/ca.crt"
+
+# Token as a second factor, also checked on heartbeats and work connections.
+auth.method           = "token"
+auth.token            = "{{ .Envs.FRP_TOKEN }}"
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
+
+# Restrict which server ports clients may bind. An empty list would allow ANY
+# port, so keep this set. Ports in this range are still unreachable from
+# outside unless also published in compose.yaml.
+allowPorts        = [{ start = 6000, end = 6009 }]
+maxPortsPerClient = 5
+
+detailedErrorsToClient = false
+
+log.to    = "console"
+log.level = "info"
+
+# Dashboard is disabled. To enable, bind to localhost only and reach it via
+# an SSH tunnel (also publish 127.0.0.1:7500:7500 in compose.yaml):
+# webServer.addr     = "127.0.0.1"
+# webServer.port     = 7500
+# webServer.user     = "admin"
+# webServer.password = "{{ .Envs.FRP_DASH_PASS }}"
