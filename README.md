@@ -29,6 +29,7 @@ One machine can be both a client and a visitor; just add both kinds of blocks to
 ```
 Dockerfile               # builds both frps and frpc (shared, checksum-verified)
 scripts/gen-certs.sh     # CA, server and client certificates (run on the server)
+scripts/npm-network.sh   # interactive: connect frps to Nginx Proxy Manager's network
 server/
   compose.yaml
   compose.npm.yaml       # optional: join NPM's external network
@@ -211,23 +212,15 @@ Port 7000 stays published directly from frps. Don't route it through NPM, not ev
 
 ### Server: one-time setup
 
-frps joins the Docker network that NPM is already on, so NPM can reach it at `http://frps:8080`. That network is *external* to this compose project, and NPM owns it. The override file `server/compose.npm.yaml` handles this, and you turn it on from `.env`, so you don't edit `compose.yaml`.
+frps has to join the Docker network NPM is on, so NPM can reach it at `http://frps:8080`. That network belongs to NPM, so to this project it's *external*. Its name depends on how NPM was started, so nothing in this repo hardcodes it:
 
-**1. Find NPM's network.**
+- `server/compose.npm.yaml` is an optional override that attaches frps to the network named in `PROXY_NETWORK`.
+- It's switched on by `COMPOSE_FILE` in `server/.env`.
+- `scripts/npm-network.sh` detects the right values and sets them for you.
 
-*If NPM is already running*, list its networks:
+**Default case (no NPM):** leave `COMPOSE_FILE` and `PROXY_NETWORK` commented out in `server/.env`, which is how they ship. frps then stays on its own `server_default` network only, and nothing here applies.
 
-```bash
-docker inspect npm -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
-```
-
-Use your NPM container's name if it isn't `npm`; `docker ps` shows it. The output is usually `proxy`, or `<folder>_default` such as `npm_default` if NPM's compose file doesn't define a network. Use that name in step 3.
-
-*If NPM isn't running yet*, create a network and start NPM on it. Make a separate folder, for example `~/npm/compose.yaml`:
-
-```bash
-docker network create proxy
-```
+**1. Make sure NPM is running.** If it already is, skip to step 2. Otherwise, start it from a separate folder, for example `~/npm/compose.yaml`:
 
 ```yaml
 services:
@@ -242,45 +235,91 @@ services:
     volumes:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
-    networks: [proxy]
-
-networks:
-  proxy:
-    external: true
 ```
 
 ```bash
 cd ~/npm && docker compose up -d
 ```
 
-**2. Enable the vhost port** in `server/frps.toml` by uncommenting:
+This compose file defines no network, so NPM lands on its compose default network, `npm_default` (named after the folder). The script handles that, as well as a named shared network such as `proxy`.
 
-```toml
-vhostHTTPPort = 8080
-```
-
-Do **not** add 8080 to `ports:` in `server/compose.yaml`. Only NPM should be able to reach it.
-
-**3. Join frps to NPM's network.** In `server/.env`, uncomment and set:
+**2. Connect frps to NPM's network with the helper script.** Run it from the repo root as your normal user, not with `sudo`. If Docker needs root, it offers to use `sudo` for docker commands only, so `server/.env` keeps its owner.
 
 ```bash
-COMPOSE_FILE=compose.yaml:compose.npm.yaml
-PROXY_NETWORK=proxy          # the name from step 1
+scripts/npm-network.sh
 ```
 
-Then recreate frps and check it joined:
+It's interactive and confirms each change before applying it:
+
+```
+  1) Connect frps to NPM's network
+  2) Disconnect (default: frps on its own network only, no NPM)
+What do you want to do? [1-2] 1
+Found NPM container 'npm'. Use it? [Y/n] y
+'npm' is on network 'npm_default'. Connect frps to it? [Y/n] y
+
+Planned changes:
+  server/.env:  COMPOSE_FILE=compose.yaml:compose.npm.yaml
+  server/.env:  PROXY_NETWORK=npm_default
+  server/frps.toml:  enable vhostHTTPPort = 8080
+
+Apply these changes? [Y/n] y
+Recreate frps now (docker compose up -d)? [Y/n] y
+==> frps networks: npm_default server_default
+Done. In NPM, forward proxy hosts to:  http://frps:8080
+```
+
+How it handles each NPM setup:
+
+| NPM's networking | What the script does |
+|---|---|
+| Its own compose network, e.g. `npm_default` (the default) | Detects it and offers it |
+| A shared network, e.g. `proxy` | Detects it and offers it |
+| Several networks | Shows a menu to pick one, or type a name |
+| Only Docker's built-in `bridge` | Explains why that can't work (no name resolution), and offers to create `proxy` and connect NPM to it |
+| `network_mode: host` | Changes nothing, and prints the alternative: publish `127.0.0.1:8080:8080` and forward to `127.0.0.1:8080` |
+| Container not detected (custom image name) | Lists running containers and asks for the name |
+
+To undo it later, run the script again and choose **2) Disconnect**. That comments the two lines back out and recreates frps on its own network only.
+
+<details>
+<summary>Manual alternative (no script)</summary>
+
+These commands detect the values instead of hardcoding them. Run them from the repo root:
 
 ```bash
-cd server && docker compose up -d
+# Find NPM's container and its first user-defined network
+NPM=$(docker ps --format '{{.Names}} {{.Image}}' | awk '$2 ~ /nginx-proxy-manager/ {print $1; exit}')
+NET=$(docker inspect "$NPM" -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' \
+      | grep -vxE 'bridge|host|none' | head -1)
+echo "NPM container: ${NPM:-not found}   network: ${NET:-none usable}"
+
+# Write them into server/.env (replaces the commented lines) and enable the vhost port
+sed -i -E "s|^#?[[:space:]]*COMPOSE_FILE=.*|COMPOSE_FILE=compose.yaml:compose.npm.yaml|; \
+           s|^#?[[:space:]]*PROXY_NETWORK=.*|PROXY_NETWORK=$NET|" server/.env
+sed -i -E 's|^#[[:space:]]*(vhostHTTPPort[[:space:]]*=)|\1|' server/frps.toml
+
+(cd server && docker compose up -d)
 docker inspect frps -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
-# expect: server_default proxy
 ```
 
-frps stays on its own default network too; the published port 7000 works the same. If the network doesn't exist, compose stops with `network proxy declared as external, but could not be found`. Check the name from step 1.
+If `NET` comes out empty, NPM is only on the built-in `bridge` network. In that case:
 
-**4. Open the firewall** for inbound **TCP 80 and 443**. Leave port 81 closed.
+1. Create a shared network: `docker network create proxy`.
+2. Add it to NPM's compose file as an external network, and recreate NPM.
+3. Re-run the commands above.
 
-**5. Secure the admin UI.** It's only reachable through an SSH tunnel:
+If you have more than one NPM container, or NPM is on several networks, set `NPM` or `NET` by hand.
+
+To disconnect: `sed -i -E 's/^(COMPOSE_FILE|PROXY_NETWORK)=/# &/' server/.env && (cd server && docker compose up -d)`.
+
+</details>
+
+Either way, never add 8080 to `ports:` in `server/compose.yaml`; only NPM should be able to reach it. If `PROXY_NETWORK` names a network that doesn't exist, compose stops with `network ... declared as external, but could not be found`.
+
+**3. Open the firewall** for inbound **TCP 80 and 443**. Leave port 81 closed.
+
+**4. Secure the admin UI.** It's only reachable through an SSH tunnel:
 
 ```bash
 ssh -L 8181:127.0.0.1:81 user@your-server
