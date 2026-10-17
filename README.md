@@ -90,7 +90,7 @@ scripts/gen-certs.sh client home-pc
 scripts/gen-certs.sh client laptop
 ```
 
-Each command creates `pki/clients/<name>/` containing `ca.crt`, `client.crt` and `client.key`. You'll copy it to that machine in Part 2.
+Each command creates `pki/clients/<name>.tar.gz` containing `ca.crt`, `client.crt` and `client.key`. You'll copy it to that machine in Part 2. It contains a private key, so only transfer it over a secure channel like `scp`.
 
 ### 6. Protect the CA key
 
@@ -121,16 +121,22 @@ Edit `.env`:
 
 ### 2. Install the certificate
 
-Copy this machine's bundle from the server, either by running this from the server:
+**On the server**, send this machine's bundle from the repo root:
 
 ```bash
-scp -r pki/clients/home-pc user@home-pc:~/frp/client/tls
+scp pki/clients/home-pc.tar.gz user@home-pc:~/
 ```
 
-or by copying it into `client/tls/` by hand. Then, on the client:
+**On the client**, unpack it into `client/tls/`, set ownership for the container user, and delete the archive:
 
 ```bash
-sudo chown -R 65532:65532 tls && sudo chmod 400 tls/client.key
+cd ~/frp/client
+mkdir -p tls
+tar -xzf ~/home-pc.tar.gz -C tls
+sudo chown -R 65532:65532 tls
+sudo chmod 400 tls/client.key
+shred -u ~/home-pc.tar.gz   # contains the private key
+ls -ln tls                  # expect ca.crt, client.crt, client.key owned by 65532
 ```
 
 ### 3. Choose what to expose

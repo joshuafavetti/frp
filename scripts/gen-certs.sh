@@ -3,7 +3,7 @@
 #
 #   scripts/gen-certs.sh ca                     # once: create the CA in pki/
 #   scripts/gen-certs.sh server <dns-name>...   # server cert -> server/tls/
-#   scripts/gen-certs.sh client <name>          # client cert -> pki/clients/<name>/
+#   scripts/gen-certs.sh client <name>          # client cert -> pki/clients/<name>.tar.gz
 #
 # pki/ holds the CA private key: move it offline once certs are issued.
 # server/tls/ is what the frps container mounts; copy a client bundle to
@@ -72,7 +72,10 @@ case "${1:-}" in
       "keyUsage=critical,digitalSignature" "extendedKeyUsage=clientAuth" > "$ext"
     sign "$dir/client" "/CN=$1" "$ext"
     cp $PKI/ca.crt "$dir/ca.crt"
-    echo "Client bundle in $dir/ (ca.crt, client.crt, client.key): copy it to the client securely."
+    # Single archive for transfer; contains the private key, so it's 0600 (umask).
+    tar -czf "$dir.tar.gz" -C "$dir" ca.crt client.crt client.key
+    echo "Client bundle: $dir.tar.gz (ca.crt, client.crt, client.key)"
+    echo "Copy it to the client securely and unpack into client/tls/ (see README)."
     ;;
 
   *)
