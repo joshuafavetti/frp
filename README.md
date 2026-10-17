@@ -282,6 +282,24 @@ How it handles each NPM setup:
 
 To undo it later, run the script again and choose **2) Disconnect**. That comments the two lines back out and recreates frps on its own network only.
 
+#### Changing the network later
+
+Sometimes NPM moves to a different network: you add a shared `proxy` network to its compose file, rename its folder (which renames `<folder>_default`), or replace it. frps has to follow.
+
+**With the script:** run `scripts/npm-network.sh` again and choose **1) Connect**. It detects NPM's current network and overwrites `PROXY_NETWORK`.
+
+**By hand:** set the new name in `server/.env` and re-run compose:
+
+```bash
+sed -i -E 's|^#?[[:space:]]*PROXY_NETWORK=.*|PROXY_NETWORK=proxy|' server/.env   # new network name
+(cd server && docker compose up -d)
+docker inspect frps -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+Compose notices the change, then recreates frps and moves it from the old network to the new one; you don't need `down`. NPM's proxy hosts don't need editing, because they still forward to `frps:8080`.
+
+**NPM's `docker compose down` and the shared network:** if frps is attached to NPM's default network (e.g. `npm_default`), NPM's `down` prints `Network npm_default Resource is still in use` and leaves the network in place. That's expected and harmless. When NPM comes back up, it rejoins the same network and reaches frps again. If you do want that network removed, disconnect frps first (script option **2**).
+
 <details>
 <summary>Manual alternative (no script)</summary>
 
