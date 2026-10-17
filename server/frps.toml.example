@@ -27,6 +27,11 @@ maxPortsPerClient = 5
 
 detailedErrorsToClient = false
 
+# Replace frp's branded "The server is powered by frp" 404 page, shown when a
+# domain has no proxy or its client is offline. server/404.html looks like a
+# browser's "This site can't be reached" page; edit it to change that.
+custom404Page = "/etc/frp/404.html"
+
 log.to    = "console"
 log.level = "info"
 

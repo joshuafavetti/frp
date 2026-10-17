@@ -77,6 +77,13 @@ check() {
     bad "vhostHTTPPort isn't enabled in $TOML, so NPM has nothing to forward to"
   fi
 
+  if grep -qE '^[[:space:]]*custom404Page[[:space:]]*=' "$TOML"; then
+    ok "Custom 404 page is set, so frp's branded error page is hidden"
+  else
+    warn "frps shows its branded \"powered by frp\" 404 page. To hide it, add to $TOML:"
+    warn "  custom404Page = \"/etc/frp/404.html\"   (then recreate frps)"
+  fi
+
   if ! docker network inspect "$net" >/dev/null 2>&1; then
     bad "PROXY_NETWORK=$net doesn't exist (docker network ls)"
     return 1

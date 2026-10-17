@@ -32,6 +32,10 @@ services:
         source: ./tls
         target: /etc/frp/tls
         read_only: true
+      - type: bind
+        source: ./404.html
+        target: /etc/frp/404.html
+        read_only: true
 
     ports:
       - "7000:7000"

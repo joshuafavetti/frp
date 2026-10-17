@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generate the mTLS PKI for frp.
 #
-#   scripts/gen-certs.sh ca                     # once: create the CA in pki/
+#   scripts/gen-certs.sh ca                     # once: create the CA in pki/ (name: $CA_NAME, default "Private CA")
 #   scripts/gen-certs.sh server <dns-name>...   # server cert -> server/tls/
 #   scripts/gen-certs.sh client <name>          # client cert -> pki/clients/<name>.tar.gz
 #
@@ -35,7 +35,7 @@ case "${1:-}" in
     mkdir -p $PKI
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
       -keyout $PKI/ca.key -out $PKI/ca.crt -days $CA_DAYS -sha256 \
-      -subj "/CN=frp-ca" \
+      -subj "/CN=${CA_NAME:-Private CA}" \
       -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
       -addext "keyUsage=critical,keyCertSign,cRLSign"
     echo "CA created: $PKI/ca.crt (keep $PKI/ca.key offline)"

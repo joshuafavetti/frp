@@ -35,6 +35,7 @@ scripts/lib.sh           # shared helpers for the two scripts above
 server/
   compose.yaml
   compose.npm.yaml       # optional: join NPM's external network
+  404.html               # generic "site can't be reached" page replacing frp's branded 404
   frps.toml.example      # copy to frps.toml
   .env.example           # copy to .env
 client/
@@ -495,6 +496,42 @@ To require a login in front of a site, create an **Access List** in NPM and atta
 - **NPM is now the most exposed component.** It runs as root inside its container and has had security bugs. Keep it pinned and updated on purpose, and watch its releases.
 - **Traffic is encrypted end to end:** HTTPS from browser to NPM, then frp's mTLS tunnel from frps to the client. Only the hop from NPM to frps on the private Docker network is plain HTTP.
 
+### Hiding that you use frp
+
+Out of the box, frps answers unknown or offline domains with a branded page ("The server is powered by frp"). This repo replaces it, and the other giveaways are covered here.
+
+**What's already handled:**
+
+| Giveaway | How it's hidden |
+|---|---|
+| frp's branded 404 page | `custom404Page` in `server/frps.toml` serves `server/404.html`, a plain page that looks like a browser's own "This site can't be reached" error. It still returns HTTP 404. |
+| `Server: frp/<version>` header | NPM (nginx) replaces upstream `Server` headers with its own, so it never reaches visitors. Never publish port 8080 directly. |
+| CA named `frp-ca`, which anyone connecting to port 7000 can see | New CAs are named `Private CA`, or `CA_NAME="..." scripts/gen-certs.sh ca` to choose. |
+
+**Existing installs:** `git pull` doesn't change your `server/frps.toml`, so add this line, then run `(cd server && docker compose up -d --force-recreate)`:
+
+```toml
+custom404Page = "/etc/frp/404.html"
+```
+
+`scripts/npm-network.sh` → **3) Check** warns while it's missing. A CA created before this change is still named `frp-ca`. Renaming it means re-creating the CA and re-issuing every cert, so only do it if that matters to you.
+
+**Customizing the page:** edit `server/404.html`, then recreate frps. It's a tracked file, so `git pull` will only conflict if the repo's copy also changes.
+
+**Going further (optional):**
+
+- **Unknown domains in NPM:** go to *Settings → Default Site* and choose **No Response (444)**. Requests for domains you haven't set up then get no reply at all, and the browser shows its own genuine error.
+- **The same for offline services:** in a proxy host's *Advanced* tab, you can turn frps's 404 into a dropped connection:
+
+  ```nginx
+  proxy_intercept_errors on;
+  error_page 404 = @gone;
+  location @gone { return 444; }
+  ```
+
+  This also swallows the app's *own* 404 pages, so only use it for sites where that's acceptable.
+- **Port 7000** is frp's well-known default, and port scanners label it. Anyone who connects sees only a TLS service that demands a client certificate. To be less recognisable, change `bindPort` in `server/frps.toml`, the published port in `server/compose.yaml`, and `serverPort` in every client's `frpc.toml` to the same uncommon port. Update the firewall to match.
+
 ---
 
 ## Part 5: Public TCP port (no visitor)
@@ -565,7 +602,7 @@ Short cert lifetimes keep the exposure window small.
 | `bind source path does not exist: .../frpc.toml` (or `frps.toml`, `tls`) | You haven't copied the `.example` file, or haven't installed the certs, yet |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
 | NPM shows `502 Bad Gateway` | frps isn't on NPM's network, or `vhostHTTPPort` isn't enabled. Run `scripts/npm-network.sh` → **3) Check** to see which |
-| frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
+| "This site can't be reached" page (frps's 404) | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
 | Let's Encrypt fails in NPM | DNS doesn't point at the server yet, or port 80 is blocked |
 | Client proxy `start error` / app not reachable through frp | Run `scripts/client-network.sh` → **5) Check**; it tests login, each proxy's `localIP`, and registration |
 | frpc ignores edits to `frpc.toml` | It was restarted rather than recreated; run `docker compose up -d --force-recreate` |

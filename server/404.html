@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>This site can't be reached</title>
+<style>
+  :root { --bg: #fff; --fg: #202124; --muted: #5f6368; --icon: #9aa0a6; --btn: #1a73e8; --btn-fg: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #202124; --fg: #e8eaed; --muted: #9aa0a6; --icon: #5f6368; --btn: #8ab4f8; --btn-fg: #202124; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body { font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 600px; margin: 14vh auto 0; padding: 0 24px; }
+  svg { width: 72px; height: 72px; fill: var(--icon); margin-bottom: 32px; }
+  h1 { font-size: 1.6em; font-weight: 500; margin: 0 0 16px; }
+  p { color: var(--muted); margin: 0 0 12px; }
+  ul { color: var(--muted); margin: 0 0 24px; padding-left: 22px; }
+  code { font: 0.8em ui-monospace, Menlo, Consolas, monospace; color: var(--muted); text-transform: uppercase; }
+  button { margin-top: 32px; padding: 9px 22px; border: 0; border-radius: 4px; background: var(--btn); color: var(--btn-fg); font: inherit; font-weight: 500; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <!-- generic "broken page" icon -->
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8.5 12.5l1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4-2.1 2.1 2.1 2.1-1.4 1.4-2.1-2.1-2.1 2.1-1.4-1.4 2.1-2.1z"/></svg>
+  <h1>This site can't be reached</h1>
+  <p><strong id="host">This site</strong>'s server address could not be found.</p>
+  <p>Try:</p>
+  <ul>
+    <li>Checking the address for typos</li>
+    <li>Checking the connection</li>
+  </ul>
+  <code>err_name_not_resolved</code>
+  <div><button type="button" onclick="location.reload()">Reload</button></div>
+</main>
+<script>
+  try { if (location.hostname) document.getElementById('host').textContent = location.hostname; } catch (e) {}
+</script>
+</body>
+</html>
