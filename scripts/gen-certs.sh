@@ -45,6 +45,9 @@ case "${1:-}" in
     shift; [[ $# -ge 1 ]] || { echo "usage: $0 server <dns-name>..." >&2; exit 1; }
     need_ca
     mkdir -p $TLS
+    # The container (uid 65532) must be able to enter the dir; umask 077 would
+    # otherwise make it owner-only. The key itself stays 0400.
+    chmod 0755 $TLS
     ext=$(mktemp)
     san=$(printf 'DNS:%s,' "$@"); san=${san%,}
     printf '%s\n' "basicConstraints=critical,CA:FALSE" \

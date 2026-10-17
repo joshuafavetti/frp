@@ -350,7 +350,7 @@ Short cert lifetimes keep the exposure window small.
 | `token in login doesn't match` | `FRP_TOKEN` differs between server and client |
 | `port not allowed` | `remotePort` is outside `allowPorts` |
 | `proxy name [...] is already in use` | Two clients use the same proxy `name` |
-| `open /etc/frp/tls/...: permission denied` | Key isn't owned by uid 65532 (`sudo chown 65532:65532 ...`) |
+| `open /etc/frp/tls/...: permission denied` | The `tls/` folder isn't `755` (`chmod 755 tls`), or the key isn't owned by uid 65532 (`sudo chown 65532:65532 tls/*.key`) |
 | `bind source path does not exist: .../frpc.toml` (or `frps.toml`, `tls`) | You haven't copied the `.example` file, or haven't installed the certs, yet |
 | Visitor connects but hangs | `secretKey` or `serverName` doesn't match the client's proxy |
 | NPM shows `502 Bad Gateway` | frps and NPM aren't on the same `proxy` network, or `vhostHTTPPort` isn't enabled |
