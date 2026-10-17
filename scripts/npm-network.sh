@@ -13,28 +13,7 @@ ENV=server/.env
 TOML=server/frps.toml
 OVERRIDE="compose.yaml:compose.npm.yaml"
 
-die()  { echo "error: $*" >&2; exit 1; }
-info() { echo "==> $*"; }
-
-ask_yn() { # <question> <default y|n>
-  local hint=$([[ $2 == y ]] && echo "Y/n" || echo "y/N") reply
-  read -rp "$1 [$hint] " reply || die "no input"
-  reply=${reply:-$2}
-  [[ $reply =~ ^[Yy] ]]
-}
-
-pick() { # <prompt> <options...>; sets PICKED to the chosen option
-  local prompt=$1; shift
-  local i=1 opt n
-  for opt in "$@"; do echo "  $i) $opt"; i=$((i + 1)); done
-  while :; do
-    read -rp "$prompt [1-$#] " n || die "no input"
-    [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= $# )) && { PICKED=${!n}; return; }
-    echo "  Enter a number from 1 to $#."
-  done
-}
-
-valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; }
+. scripts/lib.sh
 
 set_env() { # <key> <value>: replace an existing (possibly commented) line, else append
   if grep -qE "^#?[[:space:]]*$1=" "$ENV"; then
@@ -46,21 +25,8 @@ set_env() { # <key> <value>: replace an existing (possibly commented) line, else
 
 comment_env() { sed -i -E "s|^($1=.*)|# \1|" "$ENV"; }
 
-container_networks() {
-  docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$1" | sed '/^$/d'
-}
-
 # ---------- preflight ----------
-[[ -t 0 ]] || die "this script is interactive; run it from a terminal"
-command -v docker >/dev/null || die "docker not found"
-(( EUID != 0 )) || die "run as your normal user (not sudo) so .env keeps its owner; the script uses sudo for docker if needed"
-if ! docker info >/dev/null 2>&1; then
-  # Use sudo for docker only, so edited files stay owned by the user.
-  command -v sudo >/dev/null && ask_yn "Docker needs root here. Use sudo for docker commands?" y \
-    || die "can't talk to Docker (join the docker group, or allow sudo)"
-  docker() { sudo docker "$@" </dev/null; }  # sudo would otherwise eat typed input
-  docker info >/dev/null 2>&1 || die "can't talk to Docker, even with sudo"
-fi
+docker_preflight
 [[ -f $ENV ]] || die "$ENV not found; set up the server first (README Part 1)"
 
 if [[ ! -f $TOML ]]; then
@@ -276,7 +242,7 @@ info "Updated $ENV$( (( vhost_on )) || echo " and $TOML")."
 
 port=$(grep -E '^[[:space:]]*vhostHTTPPort' "$TOML" | grep -oE '[0-9]+' | head -1)
 if ask_yn "Start/recreate frps now and check the result?" y; then
-  (cd server && docker compose up -d)
+  (cd server && docker compose up -d --force-recreate)   # also re-reads frps.toml
   check || die "problems found (see above)"
   echo
   info "Done. In NPM, forward proxy hosts to:  http://frps:${port:-8080}"

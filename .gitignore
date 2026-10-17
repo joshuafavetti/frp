@@ -3,3 +3,4 @@ tls/
 pki/
 server/frps.toml
 client/frpc.toml
+client/compose.override.yaml

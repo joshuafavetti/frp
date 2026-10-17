@@ -3,6 +3,8 @@
 
 serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
 serverPort = 7000
+# Keep retrying if the server is unreachable at startup, instead of exiting.
+loginFailExit = false
 
 # mTLS: present our client cert and only trust a server signed by our CA.
 transport.tls.enable        = true
@@ -18,8 +20,9 @@ auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
 log.to    = "console"
 log.level = "info"
 
-# Nothing is exposed until you uncomment one of the examples below.
-# Proxy names must be unique across ALL clients on the server.
+# Nothing is exposed until you add proxies. Easiest: scripts/client-network.sh
+# (option 2 adds a proxy; option 1 connects other compose apps first).
+# Or uncomment an example below. Proxy names must be unique across ALL clients.
 
 # --- Private service (stcp): reachable only by a visitor with the secret ---
 # [[proxies]]

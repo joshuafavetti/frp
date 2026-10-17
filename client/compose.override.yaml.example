@@ -1,0 +1,19 @@
+# Optional: let frpc reach services in other compose apps by container name,
+# instead of via 127.0.0.1 on host networking. Copy to compose.override.yaml
+# (compose loads it automatically), or let scripts/client-network.sh write it.
+# Requires Docker Compose 2.24+ for !reset.
+#
+# Find an app's network:  docker compose ps --format '{{.Service}}  {{.Networks}}'
+# Then in frpc.toml:      localIP = "<service name>"   localPort = <container port>
+
+services:
+  frpc:
+    network_mode: !reset null   # leave host networking
+    networks:
+      - default
+      - myapp_default
+
+networks:
+  myapp_default:
+    external: true
+    name: myapp_default

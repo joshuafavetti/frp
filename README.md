@@ -29,7 +29,9 @@ One machine can be both a client and a visitor; just add both kinds of blocks to
 ```
 Dockerfile               # builds both frps and frpc (shared, checksum-verified)
 scripts/gen-certs.sh     # CA, server and client certificates (run on the server)
-scripts/npm-network.sh   # interactive: connect frps to Nginx Proxy Manager's network
+scripts/npm-network.sh   # server, interactive: connect frps to Nginx Proxy Manager's network
+scripts/client-network.sh  # client, interactive: add services, connect other compose apps' networks
+scripts/lib.sh           # shared helpers for the two scripts above
 server/
   compose.yaml
   compose.npm.yaml       # optional: join NPM's external network
@@ -37,11 +39,12 @@ server/
   .env.example           # copy to .env
 client/
   compose.yaml
+  compose.override.yaml.example  # optional: frpc joins other apps' networks (the script writes it)
   frpc.toml.example      # copy to frpc.toml
   .env.example           # copy to .env
 ```
 
-Your own `frps.toml`, `frpc.toml`, `.env`, `tls/` and `pki/` are gitignored, so `git pull` never overwrites them.
+Your own `frps.toml`, `frpc.toml`, `compose.override.yaml`, `.env`, `tls/` and `pki/` are gitignored, so `git pull` never overwrites them.
 
 ---
 
@@ -175,37 +178,102 @@ shred -u ~/home-pc.tar.gz   # contains the private key
 ls -ln tls                  # expect ca.crt, client.crt, client.key owned by 65532
 ```
 
-### 3. Choose what to expose
-
-`frpc.toml` has commented examples. Uncomment the one you need:
-
-| Example | Use it for | Public? |
-|---|---|---|
-| `stcp` proxy | Private access to a service, e.g. SSH | No; a visitor is needed (Part 3) |
-| `http` proxy | A website on your domain via NPM (Part 4) | Yes |
-| `tcp` proxy | A raw public port, e.g. a game server (Part 5) | Yes |
-
-For example, private SSH:
-
-```toml
-[[proxies]]
-name      = "home-pc-ssh"        # must be unique across all clients
-type      = "stcp"
-secretKey = "{{ .Envs.FRP_STCP_SECRET }}"
-localIP   = "127.0.0.1"
-localPort = 22
-```
-
-### 4. Start it
+### 3. Start it
 
 ```bash
 docker compose up -d --build
-docker compose logs -f   # expect: "login to server success" and "start proxy success"
+docker compose logs -f   # expect: "login to server success"
 ```
 
-After editing `frpc.toml`, apply the changes with `docker compose restart`.
+frpc starts with nothing exposed. Next, add the services you want to reach.
 
-The client uses `network_mode: host`, so `localIP = "127.0.0.1"` reaches services on the machine itself. frpc only makes outbound connections, so this doesn't open anything.
+### 4. Add services
+
+Run the helper script from the repo root (`~/frp`):
+
+```bash
+scripts/client-network.sh
+```
+
+```
+Network mode: host networking (default)
+Proxies in frpc.toml: 0
+  1) Connect frpc to more app networks (keeps existing ones)
+  2) Add a service (proxy) to frpc.toml (keeps existing ones)
+  3) Disconnect frpc from an app's network
+  4) Back to host networking (default: reach services on 127.0.0.1)
+  5) Check the current setup (changes nothing)
+```
+
+Which option to pick depends on where the service runs:
+
+| The service runs... | Choose | localIP |
+|---|---|---|
+| **Directly on this machine** (e.g. SSH), or in a container with `network_mode: host` or a published port | **2) Add a service** | `127.0.0.1` |
+| **In a Docker container from another compose file** (e.g. Home Assistant on `8123`) | **1) Connect**: frpc joins that app's network and then offers to add its services; no ports need publishing | the container's service name |
+
+For each service, the script asks for:
+- a proxy name;
+- localIP and localPort, pre-filled from what it detects;
+- how it should be reachable:
+
+| Type | Use it for | Public? |
+|---|---|---|
+| `http` | A website on your domain via NPM on the server (Part 4) | Yes |
+| `stcp` | Private access, e.g. SSH; only a visitor with the secret can connect (Part 3) | No |
+| `tcp` | A raw public port on the server, e.g. a game server (Part 5) | Yes |
+
+It appends a `[[proxies]]` block to `frpc.toml`, recreates frpc and checks the result:
+
+```
+Checking frpc network setup:
+  [ OK ] App-network mode, frpc is on: client_default ha_default media_default
+  [ OK ] frpc is on ha_default
+  [ OK ] frpc is on media_default
+  [ OK ] frpc is logged in to the server
+  [ OK ] Proxy 'homeassistant' -> 'homeassistant' resolves on ha_default
+  [ OK ] Proxy 'homeassistant' registered with the server
+  [ OK ] Proxy 'jellyfin' -> 'media-web-1' resolves on media_default
+  [ OK ] Proxy 'jellyfin' registered with the server
+```
+
+**Adding more later:** run the script again. **1) Connect** adds networks for new apps, and **2) Add a service** adds proxies. Existing networks and proxies are always kept, and a duplicate proxy name is refused. For an `http` proxy, the script also reminds you to add the matching NPM proxy host on the server.
+
+**Editing `frpc.toml` by hand:** commented examples are in the file. Apply the changes with `docker compose up -d --force-recreate`. A plain `restart` can keep reading the old file, because many editors save by replacing it, which a single-file bind mount doesn't follow. Then run the script's **5) Check**.
+
+### Exposing services from other Docker containers
+
+When the service runs in another compose project, **1) Connect** is the better choice over publishing its port to `127.0.0.1`:
+
+- **Nothing is published on the host.** frpc reaches the container directly on its Docker network, and you can drop `ports:` from that app's compose file if it was only there for frpc.
+- **frpc sees only what you connect.** In host mode, frpc can reach *every* service on the machine's localhost.
+- **One frpc serves every app.** Connect as many app networks as you need, in one run or over time.
+
+How it works:
+
+- **`client/compose.override.yaml`:** the script writes this file, which is gitignored. Compose loads it automatically. It takes frpc off host networking (`network_mode: !reset null`, which needs Docker Compose 2.24+) and attaches it to each app network as an external network. For a hand-written version, see `client/compose.override.yaml.example`.
+- **Service names:** proxies use the container's service name as `localIP`, for example `homeassistant`, and its *container* port as `localPort`. Docker DNS resolves the name on the shared network.
+- **Name clashes:** if two connected apps have a service with the same name, for example both have `web`, the script uses the unique container name instead, such as `media-web-1`. The check warns about ambiguous names.
+
+Things to know:
+
+- **`127.0.0.1` means frpc's own container** once frpc is on app networks. The check flags any proxy still using it.
+- **Containers with `network_mode: host`** have no network to join. The script lists them; keep frpc in host mode and use `127.0.0.1`.
+- **Visitors need host networking.** Off host networking, a visitor's `bindAddr` is inside the container and can't be reached from this machine. Keep visitor machines on host networking (option 4).
+- **Home Assistant behind a proxy:** requests now come from frpc's container IP, not `127.0.0.1`. In `trusted_proxies`, use the app network's subnet:
+
+  ```bash
+  docker network inspect ha_default -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'   # e.g. 172.18.0.0/16
+  ```
+
+  ```yaml
+  http:
+    use_x_forwarded_for: true
+    trusted_proxies:
+      - 172.18.0.0/16
+  ```
+
+- **Disconnecting an app** with option 3 leaves its proxies in `frpc.toml`. The check reports them as `doesn't match any container`, so remove those blocks.
 
 ---
 
@@ -394,7 +462,7 @@ Do these three steps for each site.
 
 **1. DNS:** create an A/AAAA record pointing the domain, for example `app1.com`, at the server's public IP.
 
-**2. Client:** uncomment or add an `http` proxy in `client/frpc.toml`, then run `docker compose restart`:
+**2. Client:** run `scripts/client-network.sh` → **2) Add a service** (or **1) Connect** for a containerized app) and choose `http`. By hand, add a block like this to `client/frpc.toml`, then run `docker compose up -d --force-recreate`:
 
 ```toml
 [[proxies]]
@@ -460,6 +528,21 @@ The port is now open to the internet, so the service must handle its own authent
 
 **Pulling repo updates:** your configs and secrets are gitignored, so `git pull` is safe. Afterwards, check the `.example` files for new options you might want.
 
+**Renewing certificates** (they last 1 year; check with `openssl x509 -enddate -noout -in server/tls/server.crt`). Bring `pki/ca.key` back first, then:
+
+```bash
+# Server cert: re-issue with the same names, then recreate frps
+scripts/gen-certs.sh server frp.example.com
+sudo chown 65532:65532 server/tls/server.key
+(cd server && docker compose up -d --force-recreate)
+
+# Client cert: remove the old bundle, re-issue, then install it as in Part 2, step 2
+rm -rf pki/clients/home-pc pki/clients/home-pc.tar.gz
+scripts/gen-certs.sh client home-pc
+```
+
+On the client, after unpacking the new bundle, run `docker compose up -d --force-recreate`.
+
 **Revoking a client:** frp doesn't support revocation lists, so do one of the following:
 
 - rotate `FRP_TOKEN`, which affects every client;
@@ -484,3 +567,6 @@ Short cert lifetimes keep the exposure window small.
 | NPM shows `502 Bad Gateway` | frps isn't on NPM's network, or `vhostHTTPPort` isn't enabled. Run `scripts/npm-network.sh` → **3) Check** to see which |
 | frps returns `404 Not Found` page | Domain in NPM doesn't match any client's `customDomains`, or that client's frpc isn't connected |
 | Let's Encrypt fails in NPM | DNS doesn't point at the server yet, or port 80 is blocked |
+| Client proxy `start error` / app not reachable through frp | Run `scripts/client-network.sh` → **5) Check**; it tests login, each proxy's `localIP`, and registration |
+| frpc ignores edits to `frpc.toml` | It was restarted rather than recreated; run `docker compose up -d --force-recreate` |
+| `services.frpc.network_mode` / `!reset` error from compose | Docker Compose is older than 2.24; update it to use app networks |
